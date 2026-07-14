@@ -28,6 +28,7 @@ fn monaco_address_extraction_meets_contract() {
 
     // Every feature id must be unique across the whole output.
     let mut seen_ids: HashMap<u64, ()> = HashMap::new();
+    let mut has_postcode = false;
 
     for line in &lines {
         let v: serde_json::Value = serde_json::from_str(line)
@@ -80,5 +81,15 @@ fn monaco_address_extraction_meets_contract() {
             .as_array()
             .expect("carmen:center must be an array");
         assert_eq!(center.len(), 2, "carmen:center must be [lon,lat]");
+
+        // Check if this feature has a postcode property.
+        if v["properties"].get("postcode").is_some() {
+            has_postcode = true;
+        }
     }
+
+    assert!(
+        has_postcode,
+        "at least one emitted address feature must contain a postcode property"
+    );
 }

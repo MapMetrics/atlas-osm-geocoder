@@ -71,6 +71,7 @@ const CAP: usize = 2000;
 struct Candidate {
     street: String,
     housenumber: String,
+    postcode: Option<String>,
     lon: f64,
     lat: f64,
 }
@@ -116,7 +117,7 @@ fn carmen_text(street: &str, locality: &str) -> String {
 struct Group {
     street: String,
     locality: String,
-    members: Vec<(String, f64, f64)>, // (housenumber, lon, lat)
+    members: Vec<(String, f64, f64, Option<String>)>, // (housenumber, lon, lat, postcode)
 }
 
 /// Split `members` (already sorted by housenumber) into `<=CAP`-sized
@@ -126,7 +127,7 @@ fn emit_group(
     writer: &mut LayerWriter,
     street: &str,
     locality: &str,
-    members: &[(String, f64, f64)],
+    members: &[(String, f64, f64, Option<String>)],
 ) -> Result<u64, ExtractError> {
     if members.is_empty() {
         return Ok(0);
@@ -138,15 +139,15 @@ fn emit_group(
     for (segment_index, chunk) in members.chunks(CAP).enumerate() {
         let coords: Vec<serde_json::Value> = chunk
             .iter()
-            .map(|(_, lon, lat)| serde_json::json!([lon, lat]))
+            .map(|(_, lon, lat, _)| serde_json::json!([lon, lat]))
             .collect();
         let numbers: Vec<serde_json::Value> = chunk
             .iter()
-            .map(|(hn, _, _)| serde_json::Value::from(hn.clone()))
+            .map(|(hn, _, _, _)| serde_json::Value::from(hn.clone()))
             .collect();
 
-        let clon: f64 = chunk.iter().map(|(_, lon, _)| lon).sum::<f64>() / chunk.len() as f64;
-        let clat: f64 = chunk.iter().map(|(_, _, lat)| lat).sum::<f64>() / chunk.len() as f64;
+        let clon: f64 = chunk.iter().map(|(_, lon, _, _)| lon).sum::<f64>() / chunk.len() as f64;
+        let clat: f64 = chunk.iter().map(|(_, _, lat, _)| lat).sum::<f64>() / chunk.len() as f64;
 
         let mut props = serde_json::Map::new();
         props.insert("carmen:text".into(), text.clone().into());
@@ -154,6 +155,10 @@ fn emit_group(
         props.insert("carmen:addressnumber".into(), serde_json::Value::Array(numbers));
         if !locality.is_empty() {
             props.insert("city".into(), locality.into());
+        }
+        // Emit postcode if any member in this chunk carries it.
+        if let Some(postcode) = chunk.iter().find_map(|(_, _, _, pc)| pc.clone()) {
+            props.insert("postcode".into(), postcode.into());
         }
 
         let feature_id = hid(&format!("addr:{street}:{locality}:{segment_index}"));
@@ -236,7 +241,7 @@ pub fn extract(
             });
             groups.len() - 1
         });
-        groups[idx].members.push((c.housenumber, c.lon, c.lat));
+        groups[idx].members.push((c.housenumber, c.lon, c.lat, c.postcode));
     }
 
     let path = out_dir.join("address.geojsonl");
@@ -264,9 +269,11 @@ fn candidate_from_tags(tags: &TagMap, lon: f64, lat: f64) -> Option<Candidate> {
     }
     let street = tags.get("addr:street")?.clone();
     let housenumber = tags.get("addr:housenumber")?.clone();
+    let postcode = tags.get("addr:postcode").cloned().filter(|pc| !pc.is_empty());
     Some(Candidate {
         street,
         housenumber,
+        postcode,
         lon,
         lat,
     })
@@ -311,6 +318,57 @@ mod tests {
         assert!(candidate_from_tags(&t, 1.0, 2.0).is_none());
     }
 
+    /// Postcode test: a group where some members carry addr:postcode
+    /// and others don't must emit the postcode property on the feature,
+    /// and a group with no postcodes must not emit it.
+    #[test]
+    fn emit_group_emits_postcode_when_any_member_has_it() {
+        let dir = std::env::temp_dir().join("ae_address_postcode_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("address_postcode.geojsonl");
+        let mut writer = LayerWriter::new(&path).unwrap();
+
+        // Members: some with postcode, some without
+        let members = vec![
+            ("1".to_string(), 0.0, 0.0, Some("98000".to_string())),
+            ("2".to_string(), 1.0, 1.0, None),
+            ("3".to_string(), 2.0, 2.0, Some("98000".to_string())),
+        ];
+
+        let emitted = emit_group(&mut writer, "Postcode St", "Monaco", &members).unwrap();
+        assert_eq!(emitted, 1, "Must emit exactly one feature");
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let line = contents.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let postcode = v["properties"]["postcode"].as_str();
+        assert_eq!(postcode, Some("98000"), "postcode property must be present");
+    }
+
+    #[test]
+    fn emit_group_omits_postcode_when_no_members_have_it() {
+        let dir = std::env::temp_dir().join("ae_address_no_postcode_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("address_no_postcode.geojsonl");
+        let mut writer = LayerWriter::new(&path).unwrap();
+
+        let members = vec![
+            ("1".to_string(), 0.0, 0.0, None),
+            ("2".to_string(), 1.0, 1.0, None),
+        ];
+
+        let emitted = emit_group(&mut writer, "No Postcode St", "Nowhere", &members).unwrap();
+        assert_eq!(emitted, 1);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let line = contents.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let has_postcode = v["properties"].get("postcode").is_some();
+        assert!(!has_postcode, "postcode property must not be present");
+    }
+
     /// Segment-split unit test: 4001 synthetic members in one group must
     /// split into exactly 3 emitted features of sizes 2000/2000/1, with
     /// `carmen:addressnumber` length exactly matching `MultiPoint`
@@ -322,8 +380,8 @@ mod tests {
         let path = dir.join("address_split.geojsonl");
         let mut writer = LayerWriter::new(&path).unwrap();
 
-        let members: Vec<(String, f64, f64)> = (0..4001)
-            .map(|i| (format!("{i}"), i as f64 * 0.0001, i as f64 * 0.0001))
+        let members: Vec<(String, f64, f64, Option<String>)> = (0..4001)
+            .map(|i| (format!("{i}"), i as f64 * 0.0001, i as f64 * 0.0001, None))
             .collect();
 
         let emitted = emit_group(&mut writer, "Synthetic St", "Testville", &members).unwrap();
@@ -371,7 +429,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("address_empty.geojsonl");
         let mut writer = LayerWriter::new(&path).unwrap();
-        let emitted = emit_group(&mut writer, "Empty St", "Nowhere", &[]).unwrap();
+        let emitted = emit_group(&mut writer, "Empty St", "Nowhere", &[] as &[(String, f64, f64, Option<String>)]).unwrap();
         assert_eq!(emitted, 0);
     }
 
@@ -383,8 +441,8 @@ mod tests {
         let mut writer = LayerWriter::new(&path).unwrap();
 
         let members = vec![
-            ("1".to_string(), 0.0, 0.0),
-            ("2".to_string(), 2.0, 4.0),
+            ("1".to_string(), 0.0, 0.0, None),
+            ("2".to_string(), 2.0, 4.0, None),
         ];
         emit_group(&mut writer, "Center St", "Town", &members).unwrap();
         drop(writer);
