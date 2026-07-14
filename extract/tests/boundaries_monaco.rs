@@ -1,4 +1,4 @@
-use atlas_extract::{boundaries::AdminSet, nodes::NodeTable};
+use atlas_extract::{boundaries::AdminSet, hierarchy::HierarchyIndex, nodes::NodeTable};
 
 #[test]
 fn monaco_admin_areas_assemble() {
@@ -43,4 +43,19 @@ fn monaco_admin_areas_assemble() {
             );
         }
     }
+}
+
+#[test]
+fn monaco_hierarchy_resolves_casino_de_monte_carlo() {
+    let nodes = NodeTable::load("tests/fixtures/monaco.osm.pbf".as_ref(), 10_000_000).unwrap();
+    let admin = AdminSet::load("tests/fixtures/monaco.osm.pbf".as_ref(), &nodes).unwrap();
+    let idx = HierarchyIndex::build(&admin);
+
+    // Casino de Monte-Carlo.
+    let parents = idx.resolve(7.4247, 43.7394);
+    assert_eq!(
+        parents.country.as_deref(),
+        Some("Monaco"),
+        "expected Casino de Monte-Carlo to resolve to country Monaco, got {parents:?}"
+    );
 }
