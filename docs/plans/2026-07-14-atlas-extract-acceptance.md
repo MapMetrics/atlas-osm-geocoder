@@ -85,18 +85,17 @@ Full detail below; commit `1c77efa`.
 
 ### Why the regression score didn't move: two confounds found
 
-1. **`BUNDLE_PREFIX` mismatch (process bug, not a code bug).** `worker/wrangler.osmdev.toml`
-   pins `BUNDLE_PREFIX = "nl/v1"` (git blame: unchanged since the file's creation this same day,
-   commit `c15de26`) and the worker reads *only* that env var with no per-request override. The
-   task brief's instruction to sync to `r2:atlas-osm-dev/nl/v7` would have uploaded to a path the
-   worker never reads — `nl/v1` was empty before this round. **The original 24/45 baseline run's
-   claim of "uploaded to nl/v7, served by dev worker" appears to be a documentation error** (or
-   the config differed transiently and was never committed); the worker can only ever have served
-   `nl/v1`. Corrected: synced the new bundle to `r2:atlas-osm-dev/nl/v1` (627 files, ~466 MB,
-   first real upload to that path) and redeployed. **Recommendation**: fix `BUNDLE_PREFIX` in
-   `wrangler.osmdev.toml` to match whatever path is actually intended, or standardize future dev
-   uploads on `nl/v1` to avoid re-hitting this. This session did not touch the worker's code or
-   config file per the task's explicit boundary, only the R2 upload target.
+1. **`BUNDLE_PREFIX` theory — RETRACTED (controller verification).** The fix-round agent
+   concluded the dev worker reads `nl/v1` (the `BUNDLE_PREFIX` var) and uploaded there. Wrong:
+   `r2_prefix(env)`/`BUNDLE_PREFIX` feeds ONLY legacy NL-v1 code paths; the BM25 search path
+   reads `{cc}/{BUNDLE_GEN}` with the compiled `BUNDLE_GEN = "v7"` (production ships the same
+   `BUNDLE_PREFIX="nl/v1"` var while serving v7). The baseline DID serve `nl/v7`. The corrected
+   re-measurement (calibrated bundle synced to `nl/v7`, redeploy, freshness verified via live
+   `popularity: 90` on a wiki-POI — old data scored 500-700) still returns 24/45, which
+   CONFIRMS the agent's substantive analysis in point 2 below: the residual failures are
+   worker-side, not extract-side. Process lesson kept: dev bundle iteration over a fixed
+   immutable path fights the year-long PoP cache; sub-project 3's showcase worker should use a
+   generation-suffix scheme for iterating.
 2. **The live 21 failures are dominated by cross-layer text/coverage ties the worker's own BM25
    path produces, not by popularity-scale domination** (G1's exact diagnosis was right for *why*
    POIs used to beat places on raw score — that mechanism is now fixed — but it wasn't the only
