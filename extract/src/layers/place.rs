@@ -54,7 +54,6 @@ use geo::CoordsIter;
 use crate::boundaries::AdminSet;
 use crate::emit::LayerWriter;
 use crate::error::ExtractError;
-use crate::hierarchy::HierarchyIndex;
 use crate::ids::hid;
 
 /// Populated-place `place=*` values -> place.geojsonl. OSM-tag-source subset
@@ -138,7 +137,6 @@ fn ring_centroid(area: &crate::boundaries::AdminArea) -> Option<(f64, f64)> {
 /// at the node's own coordinates. Returns the number of features written.
 pub fn extract_places(
     admin: &AdminSet,
-    hier: &HierarchyIndex,
     out_dir: &Path,
 ) -> Result<u64, ExtractError> {
     let path = out_dir.join("place.geojsonl");
@@ -155,12 +153,6 @@ pub fn extract_places(
         if text.is_empty() {
             continue;
         }
-
-        // Locality resolution is unused for place.geojsonl's own properties
-        // (the python's extract_place has no `locality` property either),
-        // but hier is accepted per the task brief's signature — reserved
-        // for a future property without changing the public interface.
-        let _ = hier;
 
         let score = place_score_from_pop(p.population);
 
@@ -353,8 +345,7 @@ mod tests {
                 },
             ],
         );
-        let hier = HierarchyIndex::build(&admin);
-        let count = extract_places(&admin, &hier, &dir).unwrap();
+        let count = extract_places(&admin, &dir).unwrap();
         assert_eq!(count, 1, "only the qualifying place_type should be emitted");
     }
 

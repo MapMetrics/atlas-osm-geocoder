@@ -81,6 +81,11 @@ fn monaco_street_extraction_meets_contract() {
     }
 
     assert!(
+        lines.len() > 900,
+        "expected > 900 named highways in Monaco fixture (fixture has 1051 ways with highway+name, ~960 with resolvable centroid), got {}",
+        lines.len()
+    );
+    assert!(
         seen_names.len() >= 20,
         "expected >= 20 distinct named streets in Monaco, got {}",
         seen_names.len()
@@ -94,9 +99,8 @@ fn monaco_place_extraction_contains_monte_carlo() {
 
     let nodes = NodeTable::load(MONACO.as_ref(), 10_000_000).unwrap();
     let admin = AdminSet::load(MONACO.as_ref(), &nodes).unwrap();
-    let hier = HierarchyIndex::build(&admin);
 
-    let count = place::extract_places(&admin, &hier, &out_dir).unwrap();
+    let count = place::extract_places(&admin, &out_dir).unwrap();
     assert!(count > 0, "expected > 0 place features, got {count}");
 
     let path = out_dir.join("place.geojsonl");

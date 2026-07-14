@@ -27,17 +27,13 @@
 //!   `layers::poi`/`layers::address` use) — mirrors `streets_v3.lon/lat`,
 //!   which is itself a single representative point per way (`extract_street`
 //!   emits `{"type": "Point", "coordinates": center}`, python ~line 444).
-//! - **Named-highway filter**: `highway` value in `{motorway, trunk,
-//!   primary, secondary, tertiary, residential, pedestrian, living_street,
-//!   unclassified}` unconditionally, plus `service` ONLY when the way also
-//!   carries a non-empty `name` tag (all classes require non-empty `name`;
-//!   `service` is additionally gated by the same condition made explicit
-//!   per the task brief, since unnamed service ways are typically driveways/
-//!   parking-aisles that would flood the street layer with noise). This
-//!   filter is this crate's OSM-tag-input equivalent of `streets.lua`'s
-//!   upstream `object.tags.highway and object.tags.name` gate (see the lua
-//!   source above), narrowed to the highway classes `STREET_SCORE` actually
-//!   assigns a score to (see below) plus `service` per the brief.
+//! - **Named-highway filter**: ANY way with non-empty `highway` tag AND
+//!   non-empty `name` tag qualifies, mirroring `streets.lua`'s upstream gate
+//!   (see `/Volumes/T7/osm.pbfconverter/streets.lua`,
+//!   `object.tags.highway and object.tags.name`). No allowlist of highway
+//!   classes; all classes from `highway=*` are accepted, achieving
+//!   production parity with `build_streets_v3.sql` (`p.highway != '' AND
+//!   p.name != ''` — no class restriction).
 //! - `carmen:text`: `dedup_join([name, "name locality", name_en, *intl.values()])`
 //!   — identical alias order to the python (~lines 413-420). This OSM-tag
 //!   pipeline has no `name_en`/`names_intl` equivalent yet (no external
@@ -46,8 +42,8 @@
 //!   `layers::poi`'s missing `ext_name`/`names_intl` slots).
 //! - `carmen:score`: `STREET_SCORE.get(highway, 1)` — the python's fixed
 //!   highway_class -> score table (~lines 55-58), with the same `1` default
-//!   fallback for any class not in the table (relevant here for `service`,
-//!   which is not a `STREET_SCORE` key).
+//!   fallback for any class not in the table (any unknown `highway=*` class
+//!   scores as 1).
 //! - optional `locality` (resolved via `HierarchyIndex`), `highway_class`
 //!   (the raw `highway` tag value, mirroring the python's `highway_class`
 //!   property name for the same field).
@@ -80,34 +76,13 @@ fn street_score(highway_class: &str) -> i64 {
     }
 }
 
-/// Highway classes that always qualify (given a non-empty `name`), mirroring
-/// the classes `STREET_SCORE` assigns a real score to — see the task brief's
-/// enumerated filter list.
-const ALWAYS_NAMED_CLASSES: &[&str] = &[
-    "motorway",
-    "trunk",
-    "primary",
-    "secondary",
-    "tertiary",
-    "residential",
-    "pedestrian",
-    "living_street",
-    "unclassified",
-];
-
-/// Whether `tags` qualifies as a named street per this module's filter: any
-/// class in [`ALWAYS_NAMED_CLASSES`], or `highway=service`, provided `name`
-/// is non-empty in all cases.
+/// Whether `tags` qualifies as a named street per this module's filter:
+/// non-empty `highway` tag AND non-empty `name` tag, with no class
+/// restrictions (production parity with `build_streets_v3.sql`).
 fn is_named_street(tags: &TagMap) -> bool {
-    let name_ok = tags.get("name").is_some_and(|v| !v.is_empty());
-    if !name_ok {
-        return false;
-    }
-    match tags.get("highway").map(String::as_str) {
-        Some(hc) if ALWAYS_NAMED_CLASSES.contains(&hc) => true,
-        Some("service") => true,
-        _ => false,
-    }
+    let has_name = tags.get("name").is_some_and(|v| !v.is_empty());
+    let has_highway = tags.get("highway").is_some_and(|v| !v.is_empty());
+    has_name && has_highway
 }
 
 /// Mirrors `extract_country_v3.py`'s `clean_alias`/`dedup_join`: strip
@@ -257,36 +232,30 @@ mod tests {
     }
 
     #[test]
-    fn is_named_street_requires_name() {
-        assert!(!is_named_street(&tags(&[("highway", "residential")])));
-        assert!(is_named_street(&tags(&[("highway", "residential"), ("name", "Main St")])));
-    }
-
-    #[test]
-    fn is_named_street_accepts_always_named_classes() {
-        for hc in ALWAYS_NAMED_CLASSES {
+    fn is_named_street_accepts_any_highway_class_when_named() {
+        // Production parity: no class allowlist. Any highway=* qualifies.
+        for hc in &[
+            "motorway", "trunk", "primary", "secondary", "tertiary", "residential",
+            "pedestrian", "living_street", "unclassified", "service", "track", "footway",
+            "unknown_class", "path", "bridleway"
+        ] {
             assert!(
                 is_named_street(&tags(&[("highway", hc), ("name", "X")])),
-                "expected {hc} to qualify"
+                "expected {hc} with name to qualify"
             );
         }
     }
 
     #[test]
-    fn is_named_street_accepts_service_only_when_named() {
-        assert!(is_named_street(&tags(&[("highway", "service"), ("name", "Depot Rd")])));
-        assert!(!is_named_street(&tags(&[("highway", "service")])));
-    }
-
-    #[test]
-    fn is_named_street_rejects_unlisted_highway_classes() {
-        assert!(!is_named_street(&tags(&[("highway", "track"), ("name", "Farm Track")])));
-        assert!(!is_named_street(&tags(&[("highway", "footway"), ("name", "Path")])));
-    }
-
-    #[test]
-    fn is_named_street_rejects_missing_highway_tag() {
+    fn is_named_street_requires_both_highway_and_name() {
+        // Missing highway tag fails even with name.
         assert!(!is_named_street(&tags(&[("name", "Nameless")])));
+        // Missing name tag fails even with highway.
+        assert!(!is_named_street(&tags(&[("highway", "residential")])));
+        // Empty highway tag fails.
+        assert!(!is_named_street(&tags(&[("highway", ""), ("name", "X")])));
+        // Empty name tag fails.
+        assert!(!is_named_street(&tags(&[("highway", "residential"), ("name", "")])));
     }
 
     #[test]
