@@ -55,3 +55,110 @@ include `alt_name`/`short_name`/`official_name` tags as aliases in carmen:text.
 The toolkit's mechanics are proven end-to-end (pbf → live geocoder in ~15 min). The remaining
 work is *ranking calibration and two worker-compat investigations* — normal search-quality
 iteration, not architectural failure. G1 alone likely brings the suite to ~33-36/45.
+
+## G1 fix round (2026-07-14, later same day)
+
+**RESULT: still 24/45 — score unchanged.** G1+G6 were implemented and verified correct at the
+data layer, but the live regression score didn't move, because **the 21 failures are not what
+G1 predicted them to be**: cross-layer text/coverage ties, not popularity-scale domination.
+Full detail below; commit `1c77efa`.
+
+### What was fixed and confirmed correct
+
+- **poi_score() recalibrated**: plain POI 0 (was 100), brand +40 (was +200), wiki +90 (was
+  +400), stack 130 (was 700) — derived from production's `poi_score()` doc comment ("~53% zero,
+  mass in 100-999, rare 8000+ landmarks") and the worker's `layer_bonus`/`text_bonus`/landmark
+  threshold (`carmen:score >= 8000`). Cross-layer ordering pinned in a unit test against
+  `place_score_from_pop`: city(800k)=118 > wiki-POI=90 > brand-POI=40 > plain-POI=0, and
+  wiki-POI=90 > village(500)=54. NL rebuild score distribution: 77.5% zero / 17.8% brand /
+  4.5% wiki / 0.1% both — directionally matches production's documented shape.
+- **G6 alt_name/short_name/official_name aliases**: confirmed end-to-end against real OSM data.
+  `alt_name=Kazerne Amsterdam Victor` on node "Kazerne Victor" → carmen:text
+  `"Kazerne Victor,Kazerne Victor Amsterdam,Kazerne Amsterdam Victor,fire_station"`.
+  `official_name=Basisschool Al Ummah` on node "Al Ummah" → carmen:text
+  `"Al Ummah,Al Ummah Enschede,Basisschool Al Ummah,school"`. Both correctly inserted after
+  name/"name locality", before brand.
+- **Direct verification the G1 mechanism is fixed**: "Anne Frank" query — the wiki-tagged
+  memorial/artwork POIs near the real Anne Frank House now score 90 (were 700, previously
+  *outscoring* the correct answer via raw popularity). "Amsterdam" with `limit=5` and
+  `debug=score` correctly returns the city (score 16.27, popularity 119) as #1, ahead of any POI.
+
+### Why the regression score didn't move: two confounds found
+
+1. **`BUNDLE_PREFIX` mismatch (process bug, not a code bug).** `worker/wrangler.osmdev.toml`
+   pins `BUNDLE_PREFIX = "nl/v1"` (git blame: unchanged since the file's creation this same day,
+   commit `c15de26`) and the worker reads *only* that env var with no per-request override. The
+   task brief's instruction to sync to `r2:atlas-osm-dev/nl/v7` would have uploaded to a path the
+   worker never reads — `nl/v1` was empty before this round. **The original 24/45 baseline run's
+   claim of "uploaded to nl/v7, served by dev worker" appears to be a documentation error** (or
+   the config differed transiently and was never committed); the worker can only ever have served
+   `nl/v1`. Corrected: synced the new bundle to `r2:atlas-osm-dev/nl/v1` (627 files, ~466 MB,
+   first real upload to that path) and redeployed. **Recommendation**: fix `BUNDLE_PREFIX` in
+   `wrangler.osmdev.toml` to match whatever path is actually intended, or standardize future dev
+   uploads on `nl/v1` to avoid re-hitting this. This session did not touch the worker's code or
+   config file per the task's explicit boundary, only the R2 upload target.
+2. **The live 21 failures are dominated by cross-layer text/coverage ties the worker's own BM25
+   path produces, not by popularity-scale domination** (G1's exact diagnosis was right for *why*
+   POIs used to beat places on raw score — that mechanism is now fixed — but it wasn't the only
+   or even the primary cause of most of these 21 fails):
+   - **"Amsterdam" at `limit=1`**: returns `'T Veldje` (a zoo, pop 100), while the *same query at
+     `limit=5`* correctly returns Amsterdam (pop 119) first. This is a `limit`-dependent
+     candidate-pool-truncation artifact in the worker (per-layer/pool caps scale with `limit`,
+     e.g. `(limit*20).max(30)`, `(limit*2).max(10)` in several rescoring sites) — reproducible,
+     independent of this round's changes, and the live_test.py golden-set harness calls with
+     `limit=1` exactly, so it hits this path on every single-result assertion. Worker code —
+     out of scope this round.
+   - **"Amsterdam Centraal"**: a **street** literally named "Centraal Station" (`coverage=1.0`,
+     full name match) outranks the actual train-station POI (`coverage=0.5` — the query
+     "amsterdam centraal" partially matches the POI's "Amsterdam Centraal"/"Centraal Station"
+     alias set but not as a full-string match). G6's alias fix is present and correct in the
+     data (confirmed above); the loss is a street-vs-poi text-coverage tie, not an alias gap.
+   - **"Anne Frank"**: now loses to *streets* named "Anne Frank" (full-coverage exact street-name
+     match at `layer_bonus=1.0`) rather than to a wiki-inflated POI as before — the G1 failure
+     mode is gone, replaced by a different (also worker-side, cross-layer) one.
+   - **"Jumbo Eindhoven" / "Kruidvat Rotterdam"**: now return the *city* (Eindhoven/Rotterdam) as
+     top result rather than "the city or a rogue POI" — an improvement in kind (no more rogue
+     POI), but still not the intended brand POI, because a two-token brand+locality query's
+     partial coverage on the city name edges out the POI's own partial coverage. This is a
+     multi-token coverage/IDF interaction, not a popularity-scale issue — outside G1's specific
+     claim.
+   - **G2 (fuzzy zero results), G3 (reverse 0/3), G4 (postcode)**: unchanged, exactly as filed —
+     confirmed still present, untouched, out of scope this round.
+
+### Per-suite comparison (baseline → this round)
+
+| Suite | Baseline | This round | Delta |
+|---|---|---|---|
+| Search (golden set) | 11/23 | 11/23 | 0 |
+| Fuzzy Levenshtein | 2/5 | 2/5 | 0 |
+| Autocomplete | 4/4 | 4/4 | 0 |
+| Reverse geocoding | 0/3 | 0/3 | 0 |
+| Category search | 2/2 | 2/2 | 0 |
+| Batch geocoding | 1/1 | 1/1 | 0 |
+| Mapbox compat | 2/2 | 2/2 | 0 |
+| BM25 hybrid | 2/5 | 2/5 | 0 |
+| **Overall** | **24/45 (53%)** | **24/45 (53%)** | **0** |
+
+Identical failure set, identical pass/fail per query. Latency unaffected (median ~175-266 ms,
+consistent with baseline's ~140-266 ms class).
+
+### What remains / recommended next steps
+
+- **G1/G6 are done and correct** — verified at the data layer (score distribution, unit tests,
+  raw carmen:text/carmen:score inspection) and confirmed to fix their specifically-diagnosed
+  failure mechanism (POI raw-score domination). They did not move the regression score because
+  the regression suite's failures turn out to be dominated by *other* ranking mechanics
+  (limit=1 pool truncation, cross-layer coverage ties on multi-token and street-collision
+  queries) that G1/G6 were never going to touch.
+  - **Fix the BUNDLE_PREFIX / upload-path mismatch first** in any future iteration — otherwise
+    changes may silently not reach the served worker again.
+  - **New gap, worth filing**: `limit=1` produces different (worse) top-1 results than
+    `limit=3`/`limit=5` for the same query on the BM25 rescoring path — reproducible on
+    "Amsterdam" (`'T Veldje` at limit=1 vs `Amsterdam` at limit=5). Since `live_test.py`'s
+    primary golden-set suite (23 of 45 tests, the largest bucket) calls with `limit=1`
+    specifically, this alone may be suppressing a meaningful fraction of the score. Worth
+    investigating before further extract-side tuning, since no amount of score calibration in
+    `extract/` can fix a pool-truncation bug in the worker.
+  - G2/G3/G4 remain exactly as filed — untouched, still the likely next-highest-value fixes
+    (worker-side manifest/spatial-shard/reverse-path investigations), still out of scope for
+    extract-only work.
