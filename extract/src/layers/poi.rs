@@ -27,6 +27,7 @@ use crate::emit::LayerWriter;
 use crate::error::ExtractError;
 use crate::hierarchy::HierarchyIndex;
 use crate::ids::{hid, osm_sid};
+use crate::layers::common::{tags_to_map, way_centroid};
 use crate::nodes::NodeTable;
 use crate::taxonomy::{categorize, is_poi, TagMap};
 
@@ -114,31 +115,6 @@ struct Candidate {
     tags: TagMap,
     lon: f64,
     lat: f64,
-}
-
-fn tags_to_map<'a>(iter: impl Iterator<Item = (&'a str, &'a str)>) -> TagMap {
-    iter.map(|(k, v)| (k.to_string(), v.to_string())).collect()
-}
-
-/// Centroid (simple arithmetic mean) of a way's resolvable member node
-/// locations. Returns `None` if zero member nodes resolve via `nodes`
-/// (caller counts this as a skip, per the brief).
-fn way_centroid(way_refs: &[i64], nodes: &NodeTable) -> Option<(f64, f64)> {
-    let mut sum_lon = 0.0f64;
-    let mut sum_lat = 0.0f64;
-    let mut n = 0u64;
-    for &node_id in way_refs {
-        if let Some((lon, lat)) = nodes.get(node_id) {
-            sum_lon += lon;
-            sum_lat += lat;
-            n += 1;
-        }
-    }
-    if n == 0 {
-        None
-    } else {
-        Some((sum_lon / n as f64, sum_lat / n as f64))
-    }
 }
 
 /// Pass 2: extract POIs from `pbf` (nodes + ways), resolve each one's
