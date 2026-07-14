@@ -31,25 +31,29 @@ impl NodeTable {
     pub fn load(pbf: &Path, max_nodes: u64) -> Result<Self, ExtractError> {
         let reader = ElementReader::from_path(pbf)?;
         let mut locations: FxHashMap<i64, (f32, f32)> = FxHashMap::default();
+        let mut nodes_seen: u64 = 0;
 
         reader.for_each(|element| {
-            if locations.len() as u64 >= max_nodes {
-                return;
-            }
             match element {
                 Element::Node(n) => {
-                    locations.insert(n.id(), (n.lon() as f32, n.lat() as f32));
+                    nodes_seen += 1;
+                    if nodes_seen <= max_nodes {
+                        locations.insert(n.id(), (n.lon() as f32, n.lat() as f32));
+                    }
                 }
                 Element::DenseNode(n) => {
-                    locations.insert(n.id(), (n.lon() as f32, n.lat() as f32));
+                    nodes_seen += 1;
+                    if nodes_seen <= max_nodes {
+                        locations.insert(n.id(), (n.lon() as f32, n.lat() as f32));
+                    }
                 }
                 _ => {}
             }
         })?;
 
-        if locations.len() as u64 >= max_nodes {
+        if nodes_seen > max_nodes {
             return Err(ExtractError::TooManyNodes {
-                seen: locations.len() as u64,
+                seen: nodes_seen,
                 max: max_nodes,
             });
         }
@@ -138,6 +142,64 @@ mod tests {
             ExtractError::TooManyNodes { seen, max } => {
                 assert!(seen >= 10, "seen={seen}");
                 assert_eq!(max, 10);
+            }
+            other => panic!("expected TooManyNodes, got {other}"),
+        }
+    }
+
+    #[test]
+    fn capacity_guard_boundary_test_exact_max_should_succeed() {
+        // Determine Monaco's exact node count first.
+        let reader = osmpbf::ElementReader::from_path(MONACO).unwrap();
+        let mut exact_count = 0u64;
+        reader
+            .for_each(|element| {
+                match element {
+                    osmpbf::Element::Node(_) | osmpbf::Element::DenseNode(_) => {
+                        exact_count += 1;
+                    }
+                    _ => {}
+                }
+            })
+            .unwrap();
+
+        eprintln!("Monaco exact node count: {}", exact_count);
+
+        // BOUNDARY TEST 1: max_nodes == exact_count should succeed (INCLUSIVE semantics).
+        let result = NodeTable::load(MONACO.as_ref(), exact_count);
+        assert!(
+            result.is_ok(),
+            "Loading Monaco with max_nodes={} (exact count) should succeed, but got: {:?}",
+            exact_count,
+            result
+        );
+        let table = result.unwrap();
+        assert_eq!(
+            table.len(),
+            exact_count,
+            "Loaded table should have exactly {} nodes",
+            exact_count
+        );
+
+        // BOUNDARY TEST 2: max_nodes == exact_count + 1 should also succeed.
+        let result = NodeTable::load(MONACO.as_ref(), exact_count + 1);
+        assert!(
+            result.is_ok(),
+            "Loading Monaco with max_nodes={} (one above count) should succeed",
+            exact_count + 1
+        );
+
+        // BOUNDARY TEST 3: max_nodes == exact_count - 1 should fail.
+        let err = NodeTable::load(MONACO.as_ref(), exact_count - 1).unwrap_err();
+        match err {
+            ExtractError::TooManyNodes { seen, max } => {
+                assert_eq!(max, exact_count - 1);
+                assert!(
+                    seen >= exact_count,
+                    "Overflow must be detected: seen={} should be >= {}",
+                    seen,
+                    exact_count
+                );
             }
             other => panic!("expected TooManyNodes, got {other}"),
         }
