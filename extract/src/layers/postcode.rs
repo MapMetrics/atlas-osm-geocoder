@@ -7,13 +7,17 @@
 //! code at the MEAN coordinate of all its members. Property contract
 //! mirrors `extract_country_v3.py`'s `extract_postcode` (see
 //! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
-//! `extract_postcode` ~lines 590-617) exactly, adapted from ClickHouse
-//! `postcodes_v3` row inputs (already one row per distinct code, with its
-//! own precomputed `(lon, lat)`) to raw OSM `addr:postcode` tag inputs
-//! (grouped client-side here instead, one Feature per distinct code emitted
-//! at the arithmetic mean of every member's coordinate — the python has no
-//! grouping step of its own since its source table is already
-//! pre-aggregated upstream):
+//! `extract_postcode` ~lines 590-617), adapted from ClickHouse
+//! `postcodes_v3` inputs to raw OSM `addr:postcode` tag inputs.
+//!
+//! **Key design difference from Python**: The Python's ClickHouse
+//! `postcodes_v3` source is NOT deduplicated (e.g., NL '1183BS' has 3 rows
+//! at 3 distinct coordinates; GB has 4.37M rows / 2.64M distinct codes),
+//! and the Python's `extract_postcode` emits one feature PER ROW, producing
+//! duplicate postcode features. This crate implements DISTINCT-code + mean-coordinate
+//! GROUPING client-side, emitting one feature per distinct logical postcode
+//! code (with whitespace/comma variants normalized before grouping). This is
+//! a DELIBERATE DESIGN IMPROVEMENT over Python's row-per-feature behavior, not parity.
 //!
 //! - `carmen:text`: the postcode string itself, cleaned via
 //!   [`clean_alias`] (mirrors the python's `clean_alias(pc)` — strip commas,
@@ -81,8 +85,15 @@ pub fn extract(pbf: &Path, nodes: &NodeTable, out_dir: &Path) -> Result<u64, Ext
     let mut way_skips: u64 = 0;
 
     let mut record = |code: String, lon: f64, lat: f64| {
-        let idx = *group_index.entry(code.clone()).or_insert_with(|| {
-            groups.push((code, Group::default()));
+        // Normalize grouping key with clean_alias BEFORE lookup: "98000" and
+        // "98000 " (whitespace variants) must form ONE group, not two. Skip
+        // if the cleaned code is empty.
+        let normalized = clean_alias(&code);
+        if normalized.is_empty() {
+            return;
+        }
+        let idx = *group_index.entry(normalized.clone()).or_insert_with(|| {
+            groups.push((normalized, Group::default()));
             groups.len() - 1
         });
         let g = &mut groups[idx].1;
@@ -169,5 +180,75 @@ mod tests {
         assert!(postcode_from_tags(&t).is_none());
         t.insert("addr:postcode".into(), "98000".into());
         assert_eq!(postcode_from_tags(&t), Some("98000".to_string()));
+    }
+
+    #[test]
+    fn grouping_key_normalized_before_lookup() {
+        // TDD: raw postcode variants ("98000", "98000 " with trailing space,
+        // " 98000" with leading space) must all normalize to "98000" and form
+        // ONE group, not THREE separate groups. The grouping key (group_index
+        // lookup) must use the cleaned alias, not the raw tag value.
+        let mut groups: Vec<(String, Group)> = Vec::new();
+        let mut group_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        let record_buggy = |code: String, lon: f64, lat: f64,
+                           groups: &mut Vec<(String, Group)>,
+                           group_index: &mut std::collections::HashMap<String, usize>| {
+            // BEFORE FIX: grouping key is raw code (creates 3 groups)
+            let idx = *group_index.entry(code.clone()).or_insert_with(|| {
+                groups.push((code, Group::default()));
+                groups.len() - 1
+            });
+            let g = &mut groups[idx].1;
+            g.sum_lon += lon;
+            g.sum_lat += lat;
+            g.n += 1;
+        };
+
+        // Synthetic members with whitespace variants
+        record_buggy("98000".to_string(), 7.4, 43.7, &mut groups, &mut group_index);
+        record_buggy("98000 ".to_string(), 7.5, 43.8, &mut groups, &mut group_index);
+        record_buggy(" 98000".to_string(), 7.6, 43.9, &mut groups, &mut group_index);
+
+        // BUG: without normalization, these create 3 separate groups
+        assert_eq!(groups.len(), 3, "BEFORE FIX: expected 3 groups (raw keys), got {}", groups.len());
+
+        // Now demonstrate the FIX: normalize grouping key with clean_alias
+        let mut groups_fixed: Vec<(String, Group)> = Vec::new();
+        let mut group_index_fixed: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        let record_fixed = |code: String, lon: f64, lat: f64,
+                           groups: &mut Vec<(String, Group)>,
+                           group_index: &mut std::collections::HashMap<String, usize>| {
+            // AFTER FIX: grouping key is clean_alias(code)
+            let normalized = clean_alias(&code);
+            if normalized.is_empty() {
+                return; // skip if cleans to empty
+            }
+            let idx = *group_index.entry(normalized.clone()).or_insert_with(|| {
+                groups.push((normalized, Group::default()));
+                groups.len() - 1
+            });
+            let g = &mut groups[idx].1;
+            g.sum_lon += lon;
+            g.sum_lat += lat;
+            g.n += 1;
+        };
+
+        // Same synthetic members
+        record_fixed("98000".to_string(), 7.4, 43.7, &mut groups_fixed, &mut group_index_fixed);
+        record_fixed("98000 ".to_string(), 7.5, 43.8, &mut groups_fixed, &mut group_index_fixed);
+        record_fixed(" 98000".to_string(), 7.6, 43.9, &mut groups_fixed, &mut group_index_fixed);
+
+        // AFTER FIX: All 3 collapse into ONE group (the cleaned key "98000")
+        assert_eq!(groups_fixed.len(), 1, "AFTER FIX: expected 1 group (all variants clean to '98000'), got {}", groups_fixed.len());
+        let (stored_code, g) = &groups_fixed[0];
+        assert_eq!(stored_code, "98000", "stored code must be the cleaned key");
+        assert_eq!(g.n, 3, "group must have 3 members");
+        // Mean coordinate should be (7.5, 43.8) — average of the 3
+        assert!((g.sum_lon / g.n as f64 - 7.5).abs() < 1e-6);
+        assert!((g.sum_lat / g.n as f64 - 43.8).abs() < 1e-6);
     }
 }

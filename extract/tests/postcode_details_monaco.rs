@@ -242,15 +242,27 @@ fn monaco_details_have_expected_fields() {
 }
 
 /// Converter details smoke: if the Rust converter dev binary is available
-/// (env `CONVERT_BIN`, else the known dev build path per PLAN-NOTES.md),
-/// run `--emit-details --src <outdir> --dst <tmp>` against our own output
-/// and assert it exits 0 — i.e. our poi_details.jsonl actually satisfies
-/// the converter's DetailsIn schema end-to-end, not just our own test
+/// (env `CONVERT_BIN`, else repo-relative fallback path), run
+/// `--emit-details --src <outdir> --dst <tmp>` against our own output and
+/// assert it exits 0 — i.e. our poi_details.jsonl actually satisfies the
+/// converter's DetailsIn schema end-to-end, not just our own test
 /// assumptions about it.
 #[test]
 fn monaco_details_satisfy_converter_emit_details_smoke() {
     let convert_bin = std::env::var("CONVERT_BIN").ok().unwrap_or_else(|| {
-        "/Volumes/T7/osm.pbfconverter/atlas-edge/converter/target/release/convert".to_string()
+        // Fallback: repo-relative path from CARGO_MANIFEST_DIR
+        // (../../atlas-edge/converter/target/release/convert)
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| ".".to_string());
+        let repo_root = std::path::PathBuf::from(manifest_dir)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        repo_root
+            .join("atlas-edge/converter/target/release/convert")
+            .to_string_lossy()
+            .to_string()
     });
 
     if !std::path::Path::new(&convert_bin).exists() {
