@@ -25,7 +25,14 @@ use fxhash::FxHashMap;
 pub type TagMap = FxHashMap<String, String>;
 
 /// (key, value-or-"*", category). Walked top-to-bottom; first match wins.
+/// Organized in family order: amenity, shop, tourism, leisure, office, craft,
+/// healthcare, then remaining families (railway, aeroway, etc) in their current
+/// relative order. Within each family, relative order is preserved exactly.
 pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
+    // ════════════════════════════════════════════════════════════════════════
+    // ── amenity FAMILY (family precedence 1) ───────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
     // ── Food & Drink ──────────────────────────────────────────────────────
     ("amenity", "restaurant", "restaurant"),
     ("amenity", "fast_food", "fast_food"),
@@ -41,15 +48,15 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "internet_cafe", "internet_cafe"),
     ("amenity", "karaoke_box", "karaoke"),
 
-    // ── Accommodation (amenity family) ───────────────────────────────────
+    // ── Accommodation ────────────────────────────────────────────────────
     ("amenity", "dormitory", "dormitory"),
 
-    // ── Tourism & Attractions (amenity family) ───────────────────────────
+    // ── Tourism & Attractions ────────────────────────────────────────────
     ("amenity", "arts_centre", "arts_centre"),
     ("amenity", "planetarium", "planetarium"),
     ("amenity", "exhibition_centre", "exhibition_centre"),
 
-    // ── Transport (amenity family) ───────────────────────────────────────
+    // ── Transport ────────────────────────────────────────────────────────
     ("amenity", "parking", "parking"),
     ("amenity", "fuel", "gas_station"),
     ("amenity", "charging_station", "ev_charging"),
@@ -65,7 +72,7 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "vehicle_inspection", "vehicle_inspection"),
     ("amenity", "parking_space", "parking"),
 
-    // ── Health & Medical (amenity family) ────────────────────────────────
+    // ── Health & Medical ─────────────────────────────────────────────────
     ("amenity", "hospital", "hospital"),
     ("amenity", "clinic", "clinic"),
     ("amenity", "doctors", "doctor"),
@@ -78,17 +85,17 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "spa", "spa"),
     ("amenity", "public_bath", "public_bath"),
 
-    // ── Finance (amenity family) ─────────────────────────────────────────
+    // ── Finance ──────────────────────────────────────────────────────────
     ("amenity", "bank", "bank"),
     ("amenity", "atm", "atm"),
     ("amenity", "bureau_de_change", "currency_exchange"),
     ("amenity", "money_transfer", "money_transfer"),
     ("amenity", "payment_terminal", "payment_terminal"),
 
-    // ── Sports & Fitness (amenity family) ────────────────────────────────
+    // ── Sports & Fitness ─────────────────────────────────────────────────
     ("amenity", "dojo", "martial_arts"),
 
-    // ── Education (amenity family) ───────────────────────────────────────
+    // ── Education ────────────────────────────────────────────────────────
     ("amenity", "school", "school"),
     ("amenity", "university", "university"),
     ("amenity", "college", "college"),
@@ -102,13 +109,13 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "training", "training_centre"),
     ("amenity", "research_institute", "research"),
 
-    // ── Religious & Spiritual (amenity family) ───────────────────────────
+    // ── Religious & Spiritual ────────────────────────────────────────────
     ("amenity", "place_of_worship", "place_of_worship"),
     ("amenity", "monastery", "monastery"),
     ("amenity", "meditation_centre", "meditation_centre"),
     ("amenity", "community_centre", "community_centre"),
 
-    // ── Entertainment (amenity family) ───────────────────────────────────
+    // ── Entertainment ───────────────────────────────────────────────────
     ("amenity", "cinema", "cinema"),
     ("amenity", "theatre", "theatre"),
     ("amenity", "nightclub", "nightclub"),
@@ -120,7 +127,7 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "circus", "circus"),
     ("amenity", "gambling", "gambling"),
 
-    // ── Public Services (amenity family) ─────────────────────────────────
+    // ── Public Services ──────────────────────────────────────────────────
     ("amenity", "post_office", "post_office"),
     ("amenity", "police", "police"),
     ("amenity", "fire_station", "fire_station"),
@@ -141,14 +148,18 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("amenity", "postalcode", "postal_area"),
     ("amenity", "admin_boundary", "admin_boundary"),
 
-    // ── Real Estate (amenity family) ─────────────────────────────────────
+    // ── Real Estate ──────────────────────────────────────────────────────
     ("amenity", "retirement_home", "retirement_home"),
 
-    // ── Additional OSM tags found in pois (amenity family) ───────────────
+    // ── Additional OSM tags found in pois ────────────────────────────────
     ("amenity", "landmark", "landmark"),
     ("amenity", "park", "park"),
     ("amenity", "marketplace", "marketplace"),
     ("amenity", "vending_machine", "vending_machine"),
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── shop FAMILY (family precedence 2) ────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
 
     // ── Shopping ──────────────────────────────────────────────────────────
     ("shop", "supermarket", "supermarket"),
@@ -209,7 +220,11 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     // wildcard values, using the generic bucket name "shop".
     ("shop", "*", "shop"),
 
-    // ── Accommodation (tourism family) ───────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // ── tourism FAMILY (family precedence 3) ───────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Accommodation ────────────────────────────────────────────────────
     ("tourism", "hotel", "hotel"),
     ("tourism", "hostel", "hostel"),
     ("tourism", "motel", "motel"),
@@ -219,7 +234,7 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("tourism", "caravan_site", "caravan_site"),
     ("tourism", "apartment", "apartment"),
 
-    // ── Tourism & Attractions ─────────────────────────────────────────────
+    // ── Tourism & Attractions ────────────────────────────────────────────
     ("tourism", "attraction", "attraction"),
     ("tourism", "museum", "museum"),
     ("tourism", "gallery", "gallery"),
@@ -236,7 +251,11 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("historic", "archaeological_site", "archaeological_site"),
     ("historic", "building", "historic_building"),
 
-    // ── Nature & Outdoors ─────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    // ── leisure FAMILY (family precedence 4) ────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Nature & Outdoors ────────────────────────────────────────────────
     ("leisure", "park", "park"),
     ("leisure", "nature_reserve", "nature_reserve"),
     ("leisure", "garden", "garden"),
@@ -249,7 +268,91 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("natural", "wood", "forest"),
     ("natural", "wetland", "wetland"),
 
-    // ── Transport (non-amenity families) ─────────────────────────────────
+    // ── Sports & Fitness ─────────────────────────────────────────────────
+    ("leisure", "fitness_centre", "gym"),
+    ("leisure", "sports_centre", "sports_centre"),
+    ("leisure", "stadium", "stadium"),
+    ("leisure", "swimming_pool", "swimming_pool"),
+    ("leisure", "golf_course", "golf_course"),
+    ("leisure", "pitch", "sports_field"),
+    ("leisure", "track", "athletics_track"),
+    ("leisure", "ice_rink", "ice_rink"),
+    ("leisure", "bowling_alley", "bowling"),
+    ("leisure", "dance", "dance_studio"),
+    ("leisure", "martial_arts", "martial_arts"),
+    ("leisure", "climbing", "climbing"),
+    ("leisure", "water_park", "water_park"),
+    ("leisure", "miniature_golf", "mini_golf"),
+    ("sport", "swimming", "swimming_pool"),
+
+    // ── Entertainment ───────────────────────────────────────────────────
+    ("leisure", "amusement_arcade", "amusement_arcade"),
+
+    // ── Nature & Outdoors (continued) ────────────────────────────────────
+    ("leisure", "picnic_table", "picnic_area"),
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── office FAMILY (family precedence 5) ───────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Finance ──────────────────────────────────────────────────────────
+    ("office", "insurance", "insurance"),
+    ("office", "accountant", "accountant"),
+    ("office", "financial", "financial_services"),
+
+    // ── Education ────────────────────────────────────────────────────────
+    ("office", "educational_institution", "educational_institution"),
+
+    // ── Public Services ──────────────────────────────────────────────────
+    ("office", "government", "government_office"),
+
+    // ── Business & Services ──────────────────────────────────────────────
+    ("office", "company", "company"),
+    ("office", "it", "it_company"),
+    ("office", "architect", "architect"),
+    ("office", "lawyer", "lawyer"),
+    ("office", "agent", "agent"),
+    ("office", "ngo", "ngo"),
+    ("office", "consulting", "consulting"),
+    ("office", "logistics", "logistics"),
+    ("office", "association", "association"),
+    ("office", "construction_company", "construction"),
+
+    // ── Real Estate ──────────────────────────────────────────────────────
+    ("office", "estate_agent", "estate_agent"),
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── craft FAMILY (family precedence 6) ──────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Business & Services ──────────────────────────────────────────────
+    ("craft", "electrician", "electrician"),
+    ("craft", "plumber", "plumber"),
+    ("craft", "carpenter", "carpenter"),
+    ("craft", "painter", "painter"),
+    ("craft", "handyman", "handyman"),
+    ("craft", "printer", "printing"),
+    ("craft", "glaziery", "glazier"),
+    ("craft", "general", "tradesperson"),
+    ("craft", "metal_construction", "metal_construction"),
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── healthcare FAMILY (family precedence 7) ────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Health & Medical ─────────────────────────────────────────────────
+    ("healthcare", "clinic", "clinic"),
+    ("healthcare", "doctor", "doctor"),
+    ("healthcare", "hospital", "hospital"),
+    ("healthcare", "pharmacy", "pharmacy"),
+    ("healthcare", "dentist", "dentist"),
+    ("healthcare", "alternative", "alternative_medicine"),
+    ("healthcare", "optometrist", "optometrist"),
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── Remaining families (non-precedence POI families) ────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+
     // NOTE: osm_to_category_mapping.py also carries a large highway=* block
     // ("Additional OSM tags found in pois" section: residential, tertiary,
     // secondary, primary, unclassified, service, track, trunk, footway,
@@ -270,79 +373,12 @@ pub static CATEGORY_TABLE: &[(&str, &str, &str)] = &[
     ("railway", "halt", "train_stop"),
     ("aeroway", "aerodrome", "airport"),
     ("aeroway", "terminal", "airport_terminal"),
-
-    // ── Health & Medical (healthcare family) ─────────────────────────────
-    ("healthcare", "clinic", "clinic"),
-    ("healthcare", "doctor", "doctor"),
-    ("healthcare", "hospital", "hospital"),
-    ("healthcare", "pharmacy", "pharmacy"),
-    ("healthcare", "dentist", "dentist"),
-    ("healthcare", "alternative", "alternative_medicine"),
-    ("healthcare", "optometrist", "optometrist"),
-
-    // ── Finance (office family) ───────────────────────────────────────────
-    ("office", "insurance", "insurance"),
-    ("office", "accountant", "accountant"),
-    ("office", "financial", "financial_services"),
-
-    // ── Sports & Fitness ───────────────────────────────────────────────────
-    ("leisure", "fitness_centre", "gym"),
-    ("leisure", "sports_centre", "sports_centre"),
-    ("leisure", "stadium", "stadium"),
-    ("leisure", "swimming_pool", "swimming_pool"),
-    ("leisure", "golf_course", "golf_course"),
-    ("leisure", "pitch", "sports_field"),
-    ("leisure", "track", "athletics_track"),
-    ("leisure", "ice_rink", "ice_rink"),
-    ("leisure", "bowling_alley", "bowling"),
-    ("leisure", "dance", "dance_studio"),
-    ("leisure", "martial_arts", "martial_arts"),
-    ("leisure", "climbing", "climbing"),
-    ("leisure", "water_park", "water_park"),
-    ("leisure", "miniature_golf", "mini_golf"),
-    ("sport", "swimming", "swimming_pool"),
-
-    // ── Education (office family) ─────────────────────────────────────────
-    ("office", "educational_institution", "educational_institution"),
-
-    // ── Entertainment (leisure family) ────────────────────────────────────
-    ("leisure", "amusement_arcade", "amusement_arcade"),
-
-    // ── Public Services (office / government / emergency families) ───────
-    ("office", "government", "government_office"),
     ("government", "justice", "courthouse"),
     ("emergency", "fire_hydrant", "fire_hydrant"),
-
-    // ── Business & Services ────────────────────────────────────────────────
-    ("office", "company", "company"),
-    ("office", "it", "it_company"),
-    ("office", "architect", "architect"),
-    ("office", "lawyer", "lawyer"),
-    ("office", "agent", "agent"),
-    ("office", "ngo", "ngo"),
-    ("office", "consulting", "consulting"),
-    ("craft", "electrician", "electrician"),
-    ("craft", "plumber", "plumber"),
-    ("craft", "carpenter", "carpenter"),
-    ("craft", "painter", "painter"),
-    ("craft", "handyman", "handyman"),
-    ("craft", "printer", "printing"),
-    ("craft", "glaziery", "glazier"),
-    ("craft", "general", "tradesperson"),
     ("man_made", "crane", "crane"),
     ("landuse", "industrial", "industrial"),
-    ("office", "logistics", "logistics"),
-    ("office", "association", "association"),
-    ("office", "construction_company", "construction"),
-    ("craft", "metal_construction", "metal_construction"),
-
-    // ── Real Estate (non-amenity families) ────────────────────────────────
     ("landuse", "residential", "residential"),
     ("building", "apartments", "apartments"),
-    ("office", "estate_agent", "estate_agent"),
-
-    // ── Nature & Outdoors (leisure, cont'd) ───────────────────────────────
-    ("leisure", "picnic_table", "picnic_area"),
 ];
 
 /// Walk `CATEGORY_TABLE` in order; first (key, value-or-`*`) match wins.
@@ -362,9 +398,16 @@ pub fn categorize(tags: &TagMap) -> Option<&'static str> {
 /// category. `pois_all.lua` itself only gates on tag presence
 /// (`amenity or shop or tourism or leisure or office or craft or healthcare`);
 /// the name/brand requirement is an addition from the Task 2 brief's stated
-/// interface contract.
+/// interface contract. The name/brand value must be non-empty.
 pub fn is_poi(tags: &TagMap) -> bool {
-    let has_identity = tags.contains_key("name") || tags.contains_key("brand");
+    let has_identity = tags
+        .get("name")
+        .map(|n| !n.is_empty())
+        .unwrap_or(false)
+        || tags
+            .get("brand")
+            .map(|b| !b.is_empty())
+            .unwrap_or(false);
     has_identity && categorize(tags).is_some()
 }
 
@@ -416,9 +459,48 @@ mod tests {
 
     #[test]
     fn is_poi_requires_name_or_brand_plus_category() {
-        assert_eq!(is_poi(&tags(&[("amenity", "cafe")])), false); // no name/brand
-        assert_eq!(is_poi(&tags(&[("amenity", "cafe"), ("name", "Joe's")])), true);
-        assert_eq!(is_poi(&tags(&[("amenity", "cafe"), ("brand", "Starbucks")])), true);
-        assert_eq!(is_poi(&tags(&[("foo", "bar"), ("name", "Nothing")])), false); // no category
+        assert!(!is_poi(&tags(&[("amenity", "cafe")]))); // no name/brand
+        assert!(is_poi(&tags(&[("amenity", "cafe"), ("name", "Joe's")])));
+        assert!(is_poi(&tags(&[("amenity", "cafe"), ("brand", "Starbucks")])));
+        assert!(!is_poi(&tags(&[("foo", "bar"), ("name", "Nothing")]))); // no category
+    }
+
+    #[test]
+    fn precedence_office_beats_craft() {
+        // office=logistics + craft=electrician must → "logistics"
+        // office (family index 4) beats craft (family index 5)
+        let t = tags(&[("office", "logistics"), ("craft", "electrician")]);
+        assert_eq!(categorize(&t), Some("logistics"));
+    }
+
+    #[test]
+    fn precedence_leisure_beats_office() {
+        // leisure=fitness_centre + office=insurance must → "gym"
+        // leisure (family index 3) beats office (family index 4)
+        let t = tags(&[("leisure", "fitness_centre"), ("office", "insurance")]);
+        assert_eq!(categorize(&t), Some("gym"));
+    }
+
+    #[test]
+    fn precedence_office_beats_craft_estate() {
+        // office=estate_agent + craft=metal_construction must → "estate_agent"
+        // office (family index 4) beats craft (family index 5)
+        let t = tags(&[("office", "estate_agent"), ("craft", "metal_construction")]);
+        assert_eq!(categorize(&t), Some("estate_agent"));
+    }
+
+    #[test]
+    fn precedence_leisure_beats_office_picnic() {
+        // leisure=picnic_table + office=company must → "picnic_area"
+        // leisure (family index 3) beats office (family index 4)
+        let t = tags(&[("leisure", "picnic_table"), ("office", "company")]);
+        assert_eq!(categorize(&t), Some("picnic_area"));
+    }
+
+    #[test]
+    fn is_poi_requires_non_empty_name() {
+        // name="" should not be considered as having identity
+        assert!(!is_poi(&tags(&[("amenity", "cafe"), ("name", "")])));
+        assert!(is_poi(&tags(&[("amenity", "cafe"), ("name", "Joe's")])));
     }
 }
