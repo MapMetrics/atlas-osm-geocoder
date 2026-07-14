@@ -6,10 +6,12 @@
 //! times during pass 2 (once per POI). [`HierarchyIndex::resolve`] is
 //! therefore optimized to be a pure read with minimal allocation:
 //!
-//! 1. Admin-area polygons are bucketed under the H3 resolution-5 cells that
-//!    cover their bounding box, so a query only has to point-in-polygon test
-//!    against the handful of areas whose bbox happens to cover the query's
-//!    own res-5 cell (rather than every admin area in the extract).
+//! 1. Admin-area polygons are bucketed under every H3 resolution-5 cell that
+//!    their exact polygon coverage touches (via `h3o::geom`'s `Tiler`, not a
+//!    bounding-box approximation), so a query only has to point-in-polygon
+//!    test against the handful of areas whose coverage happens to include
+//!    the query's own res-5 cell (rather than every admin area in the
+//!    extract).
 //! 2. Place nodes (for the locality fallback) are bucketed the same way,
 //!    keyed by their own single res-5 cell.
 //!
@@ -31,6 +33,7 @@ use geo::algorithm::area::Area;
 use geo::algorithm::bounding_rect::BoundingRect;
 use geo::algorithm::contains::Contains;
 use geo::Point;
+use h3o::geom::{ContainmentMode, TilerBuilder};
 use h3o::{CellIndex, LatLng, Resolution};
 
 use crate::boundaries::{AdminArea, AdminSet, PlaceNode};
@@ -46,12 +49,16 @@ pub struct Parents {
 }
 
 /// H3 resolution used for the PIP/fallback spatial index. Res-5 cells have
-/// an average edge length of ~9.85 km; the bbox lattice below is stepped at
-/// roughly half that, so a polygon's bbox is never under-covered by its
-/// bucket cells.
+/// an average edge length of ~9.85 km. Bucket cells are computed via
+/// `h3o::geom::Tiler`'s exact polygon coverage (see [`bucket_cells_for_area`]),
+/// not a hand-rolled lattice, so this is purely which resolution to bucket
+/// at — it no longer influences a sampling step size.
 const BUCKET_RESOLUTION: Resolution = Resolution::Five;
 
-/// Maximum distance (meters) for the place-node locality fallback.
+/// Maximum distance (meters) for the place-node locality fallback. This
+/// bound is **inclusive**: a place node exactly `PLACE_FALLBACK_MAX_METERS`
+/// away from the query point still qualifies (see the `dist > MAX` — not
+/// `>=` — check in [`HierarchyIndex::nearest_place_within`]).
 const PLACE_FALLBACK_MAX_METERS: f64 = 10_000.0;
 
 /// Mean Earth radius (meters), matching the constant geo's (deprecated)
@@ -243,35 +250,84 @@ fn cell_for_point(lon: f64, lat: f64) -> Option<CellIndex> {
         .map(|ll| ll.to_cell(BUCKET_RESOLUTION))
 }
 
-/// Every res-5 H3 cell covering `area`'s combined bounding box, deduplicated.
-/// Computed by walking a lattice over the bbox stepped at roughly half a
-/// res-5 hexagon's average edge length (~4.9 km), converting each lattice
-/// point to its containing cell, and deduping. This guarantees the bbox is
-/// never under-sampled (a step larger than the cell size could skip a
-/// cell), while over-sampling only costs a few redundant (deduped) lookups.
+/// Every res-5 H3 cell whose area intersects `area`'s rings, deduplicated.
+///
+/// Computed via `h3o::geom::Tiler` in [`ContainmentMode::Covers`] mode,
+/// which is the mode that guarantees a *complete* coverage of the polygon:
+/// every cell that the polygon boundary intersects is included, plus (per
+/// `Covers`'s extension over plain `IntersectsBoundary`) the covering cell
+/// in the edge case where the whole polygon is smaller than a single cell.
+/// `ContainsCentroid`/`ContainsBoundary` are deliberately not used here —
+/// both can leave real polygon area uncovered by any bucket cell, which is
+/// exactly the class of bug this function replaces (see the regression test
+/// `bucket_coverage_has_no_gaps_at_high_latitude`): the previous hand-rolled
+/// bbox lattice walk, stepped at half of h3o's *global-average* res-5 edge
+/// length converted via a flat 111 km/degree constant, could skip real
+/// res-5 cells because a square lattice doesn't sample the same way a
+/// hexagonal grid tiles — reproduced empirically at 60°N with a small
+/// (~0.4° x 0.2°) bbox, where 2 real res-5 cells were never sampled.
+///
+/// If the Tiler rejects a ring as invalid geometry (e.g. degenerate/
+/// self-intersecting), that single polygon falls back to the old bbox
+/// lattice walk (see [`lattice_fallback_cells_for_bbox`]) rather than losing
+/// the admin area from the index entirely; a warning is printed so the bad
+/// geometry is visible without panicking pass-2 processing.
 fn bucket_cells_for_area(area: &AdminArea) -> Vec<CellIndex> {
     let mut cells: Vec<CellIndex> = Vec::new();
 
-    // Combined bbox across every ring in this admin area.
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
     for ring in &area.rings {
-        if let Some(rect) = ring.bounding_rect() {
-            min_x = min_x.min(rect.min().x);
-            min_y = min_y.min(rect.min().y);
-            max_x = max_x.max(rect.max().x);
-            max_y = max_y.max(rect.max().y);
+        let mut tiler = TilerBuilder::new(BUCKET_RESOLUTION)
+            .containment_mode(ContainmentMode::Covers)
+            .build();
+        match tiler.add(ring.clone()) {
+            Ok(()) => cells.extend(tiler.into_coverage()),
+            Err(err) => {
+                eprintln!(
+                    "hierarchy: H3 Tiler rejected a ring for admin area {:?} \
+                     (admin_level={}): {err}; falling back to bbox lattice \
+                     coverage for this ring",
+                    area.name, area.admin_level
+                );
+                if let Some(rect) = ring.bounding_rect() {
+                    cells.extend(lattice_fallback_cells_for_bbox(
+                        rect.min().x,
+                        rect.min().y,
+                        rect.max().x,
+                        rect.max().y,
+                    ));
+                }
+            }
         }
     }
+
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+/// Fallback bbox lattice walk, used only when `h3o::geom::Tiler` rejects a
+/// ring as invalid geometry (see [`bucket_cells_for_area`]).
+///
+/// NOTE: this walk uses a flat 111 km/degree constant to convert the res-5
+/// step size to degrees, which does *not* account for longitude compression
+/// at higher latitudes (1 degree of longitude is ~111 km at the equator but
+/// shrinks toward 0 near the poles). That only makes the fallback
+/// *over*-sample at high latitudes (more redundant, deduped lattice points,
+/// never fewer) — it does not reintroduce the square-lattice-vs-hex-tiling
+/// undersampling bug this module was fixed for, since this path is now only
+/// reached for a handful of geometrically-invalid rings rather than being
+/// the primary coverage strategy.
+fn lattice_fallback_cells_for_bbox(
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Vec<CellIndex> {
+    let mut cells: Vec<CellIndex> = Vec::new();
     if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
         return cells;
     }
 
-    // Half the res-5 average edge length, in degrees (~1 degree of latitude
-    // ~= 111 km; close enough for a lattice step, since we only need to
-    // avoid under-sampling, not hit an exact cell size).
     let half_edge_km = BUCKET_RESOLUTION.edge_length_km() / 2.0;
     let step_deg = (half_edge_km / 111.0).max(1e-6);
 
@@ -293,8 +349,6 @@ fn bucket_cells_for_area(area: &AdminArea) -> Vec<CellIndex> {
         y = (y + step_deg).min(max_y);
     }
 
-    cells.sort_unstable();
-    cells.dedup();
     cells
 }
 
@@ -473,6 +527,56 @@ mod tests {
         let idx = HierarchyIndex::build(&admin);
         let result = idx.resolve(0.0, 0.0);
         assert_eq!(result.locality.as_deref(), Some("Nearer"));
+    }
+
+    #[test]
+    fn bucket_coverage_has_no_gaps_at_high_latitude() {
+        // Regression test for a reviewed CRITICAL finding: the old bbox
+        // lattice walk (stepped at half of h3o's *global-average* res-5
+        // edge length, using a flat 111 km/degree constant) could skip real
+        // res-5 cells because a square lattice doesn't tile the same way a
+        // hex grid does — the gap is a lattice-vs-hex sampling artifact, not
+        // (primarily) a latitude/longitude-compression artifact. It was
+        // empirically reproduced at 60°N with a small (~0.4° x 0.2°) bbox,
+        // where 2 real res-5 cells were never sampled, so points inside
+        // those cells silently failed to resolve the enclosing locality.
+        //
+        // This test builds a small polygon in exactly that regime and then
+        // *densely* samples its interior (finer than any single H3 res-5
+        // cell), asserting every sample point resolves. A single skipped
+        // cell anywhere under the polygon's interior will surface as a
+        // `None` locality on at least one of the ~800 sample points.
+        let admin = AdminSet::for_test(
+            vec![square("Northland", 8, 5.1, 60.0, 5.5, 60.2)],
+            vec![],
+        );
+        let idx = HierarchyIndex::build(&admin);
+
+        let step = 0.01;
+        let mut checked = 0;
+        let mut lon = 5.1 + step;
+        while lon < 5.5 {
+            let mut lat = 60.0 + step;
+            while lat < 60.2 {
+                let result = idx.resolve(lon, lat);
+                assert_eq!(
+                    result.locality.as_deref(),
+                    Some("Northland"),
+                    "gap in H3 bucket coverage at ({lon}, {lat}): point inside \
+                     the polygon failed to resolve"
+                );
+                checked += 1;
+                lat += step;
+            }
+            lon += step;
+        }
+        // Sanity check: make sure the dense grid actually exercised a
+        // meaningful number of sample points (guards against a future edit
+        // accidentally shrinking the loop to a no-op).
+        assert!(
+            checked >= 700,
+            "expected a dense sample grid (~800 points), only checked {checked}"
+        );
     }
 
     #[test]
