@@ -8,10 +8,12 @@
 //! row inputs to raw OSM tag inputs:
 //!
 //! - `carmen:text`: dedup-joined aliases, name-first: `[name, "name locality",
-//!   brand, "brand locality", category]`. The python's `ext_name`/`names_intl`
-//!   alias slots have no OSM-tag equivalent in this v1 (no external-source
-//!   merge at this stage) and are simply absent from the list, not emitted as
-//!   empty entries.
+//!   alt_name, short_name, official_name, brand, "brand locality", category]`
+//!   (G6: `alt_name`/`short_name`/`official_name` tag values inserted after
+//!   name/"name locality" and before brand — see [`carmen_text`] doc). The
+//!   python's `ext_name`/`names_intl` alias slots have no OSM-tag equivalent
+//!   in this v1 (no external-source merge at this stage) and are simply
+//!   absent from the list, not emitted as empty entries.
 //! - `carmen:center`: raw `[lon, lat]`, unrounded (the python does not round
 //!   `extract_poi`'s center either — only `extract_country`'s country
 //!   centroid rounds to 4dp).
@@ -33,21 +35,67 @@ use crate::taxonomy::{categorize, is_poi, TagMap};
 
 /// carmen:score / popularity v1 scoring — a deterministic, open-data
 /// stand-in for the enriched popularity score `poi_score()` computes in
-/// `extract_country_v3.py` (which draws on external enrichment
-/// `popularity`/`review_count` columns that have no OSM-tag equivalent
-/// here). Base 100; +400 if either `wikidata` or `wikipedia` is present
-/// (a reasonable notability signal — POIs get external encyclopedic
-/// references); +200 if `brand` is present (chain/franchise signal). The
-/// two bonuses stack (a branded, wikidata-linked POI scores 700).
+/// `extract_country_v3.py` (~lines 148-159:
+/// `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`),
+/// which draws on external enrichment `popularity`/`review_count` columns
+/// that have no OSM-tag equivalent here.
+///
+/// # Calibration derivation (G1 fix — see
+/// `docs/plans/2026-07-14-atlas-extract-acceptance.md`)
+///
+/// The v1 formula this replaces (base 100, +400 wiki, +200 brand → up to
+/// 700) put EVERY unenriched POI at 100 — above a real village's place
+/// score (~54 for pop 500) and in the same magnitude as many small towns.
+/// That is backwards from production. Two production facts anchor the fix:
+///
+/// 1. `extract_country_v3.py`'s `poi_score()` doc comment: "popularity in
+///    pois_v3 already clusters in the hundreds like NL's... Distribution
+///    verified to mirror NL: **~53% zero**, mass in 100-999, rare 8000+
+///    landmarks." An unenriched POI (no `popularity`/`review_count`) scores
+///    **0**, not a positive base.
+/// 2. The serving worker (`atlas-edge/worker/src/lib.rs`, `text_bonus_impl`)
+///    hardcodes a landmark threshold at `carmen:score >= 8000`
+///    (+200 alias-boost) and `layer_bonus` gives poi/place comparable flat
+///    weight (poi 1.5 vs place 2.0) — popularity is a fine-grained
+///    tiebreaker (further log10-compressed into a 1-9ish priority byte by
+///    the converter's `intrinsic_priority_u8`), never a competitor to a
+///    place's text/layer signal. Places must dominate POIs by default;
+///    only genuinely notable (wiki-tagged) POIs should approach city
+///    territory, and even then stay below a real city.
+///
+/// `place.rs`'s `place_score_from_pop` (untouched, production-pinned:
+/// `20*log10(pop+1)`, capped 250) gives a village of pop 500 a score of
+/// ~54, and a city of pop 800,000 a score of ~118. This function is
+/// calibrated against those same reference points:
+///
+/// - **Plain POI** (no wiki, no brand): **0** — mirrors production's ~53%
+///   zero mass exactly; a plain café must never outrank even a hamlet.
+/// - **Brand bonus** (`brand` tag present — chain/franchise notability):
+///   **+40** — clearly above a plain POI, but well under a village (54),
+///   since a franchise tag alone isn't real-world notability.
+/// - **Wiki bonus** (`wikidata` or `wikipedia` present — an external
+///   encyclopedic reference, the strongest open-data notability signal
+///   available at this stage): **+90** — beats a village (54) so a
+///   wiki-tagged landmark in a tiny village still surfaces, but stays
+///   below a mid-size city (118) so "Amsterdam" the city beats a
+///   wiki-tagged POI merely located in Amsterdam.
+/// - The two bonuses stack (brand + wiki = 130): still comfortably below a
+///   city, at the low end of production's "100-999" mass band, nowhere
+///   near the 8000+ landmark tier (which requires real enrichment data
+///   this OSM-tag-only v1 has no source for).
+///
+/// Ordering pinned in `poi_score_ordering_matches_production_relationships`
+/// below: city(800k) > wiki-POI > brand-POI > plain-POI(=0), and
+/// wiki-POI > village(500).
 fn poi_score(tags: &TagMap) -> i64 {
-    let mut score: i64 = 100;
+    let mut score: i64 = 0;
     let has_wiki = tags.get("wikidata").is_some_and(|v| !v.is_empty())
         || tags.get("wikipedia").is_some_and(|v| !v.is_empty());
     if has_wiki {
-        score += 400;
+        score += 90;
     }
     if tags.get("brand").is_some_and(|v| !v.is_empty()) {
-        score += 200;
+        score += 40;
     }
     score
 }
@@ -80,8 +128,22 @@ fn dedup_join(parts: &[String]) -> String {
 }
 
 /// Build the alias list + resulting `carmen:text` for one POI. Order mirrors
-/// `extract_poi`: name, "name locality", brand, "brand locality", category.
-fn carmen_text(name: &str, brand: &str, locality: Option<&str>, category: Option<&str>) -> String {
+/// `extract_poi`: name, "name locality", brand, "brand locality", category —
+/// with `name_variants` (G6: `alt_name`/`short_name`/`official_name` tag
+/// values, in that order) inserted after name/"name locality" and before
+/// brand. These OSM tags carry common alternate query forms the primary
+/// `name` tag misses (e.g. a station tagged `name=Centraal Station` but
+/// commonly searched as `alt_name=Amsterdam Centraal`); production's
+/// equivalent is external-source alias enrichment this OSM-tag-only v1 has
+/// no other route to. Empty variants are skipped; `dedup_join` below
+/// case-insensitively dedupes against `name` and each other.
+fn carmen_text(
+    name: &str,
+    brand: &str,
+    locality: Option<&str>,
+    category: Option<&str>,
+    name_variants: &[&str],
+) -> String {
     let mut aliases: Vec<String> = Vec::new();
     if !name.is_empty() {
         aliases.push(name.to_string());
@@ -91,6 +153,11 @@ fn carmen_text(name: &str, brand: &str, locality: Option<&str>, category: Option
             if !loc.is_empty() {
                 aliases.push(format!("{name} {loc}"));
             }
+        }
+    }
+    for variant in name_variants {
+        if !variant.is_empty() {
+            aliases.push(variant.to_string());
         }
     }
     if !brand.is_empty() {
@@ -190,7 +257,12 @@ pub fn extract(
         let parents = hier.resolve(c.lon, c.lat);
         let locality = parents.locality.as_deref();
 
-        let text = carmen_text(name, brand, locality, category);
+        let alt_name = c.tags.get("alt_name").map(String::as_str).unwrap_or("");
+        let short_name = c.tags.get("short_name").map(String::as_str).unwrap_or("");
+        let official_name = c.tags.get("official_name").map(String::as_str).unwrap_or("");
+        let name_variants = [alt_name, short_name, official_name];
+
+        let text = carmen_text(name, brand, locality, category, &name_variants);
         if text.is_empty() {
             // is_poi already guarantees name-or-brand present, so this
             // should not happen, but never emit an empty carmen:text.
@@ -246,35 +318,68 @@ mod tests {
 
     #[test]
     fn poi_score_base_only() {
-        assert_eq!(poi_score(&tags(&[("amenity", "cafe")])), 100);
+        assert_eq!(poi_score(&tags(&[("amenity", "cafe")])), 0);
     }
 
     #[test]
     fn poi_score_wikidata_bonus() {
-        assert_eq!(poi_score(&tags(&[("wikidata", "Q123")])), 500);
+        assert_eq!(poi_score(&tags(&[("wikidata", "Q123")])), 90);
     }
 
     #[test]
     fn poi_score_wikipedia_bonus() {
-        assert_eq!(poi_score(&tags(&[("wikipedia", "en:Foo")])), 500);
+        assert_eq!(poi_score(&tags(&[("wikipedia", "en:Foo")])), 90);
     }
 
     #[test]
     fn poi_score_brand_bonus() {
-        assert_eq!(poi_score(&tags(&[("brand", "Starbucks")])), 300);
+        assert_eq!(poi_score(&tags(&[("brand", "Starbucks")])), 40);
     }
 
     #[test]
     fn poi_score_wiki_and_brand_stack() {
         assert_eq!(
             poi_score(&tags(&[("wikidata", "Q1"), ("brand", "Starbucks")])),
-            700
+            130
         );
     }
 
     #[test]
     fn poi_score_empty_wikidata_value_does_not_count() {
-        assert_eq!(poi_score(&tags(&[("wikidata", "")])), 100);
+        assert_eq!(poi_score(&tags(&[("wikidata", "")])), 0);
+    }
+
+    /// G1 fix: pins the cross-layer score RELATIONSHIP this module's doc
+    /// comment derives from production (see `poi_score` doc). Uses
+    /// `place::place_score_from_pop`-equivalent math directly (that
+    /// function is private to `place.rs` and intentionally untouched —
+    /// production-pinned — so this test re-derives its formula inline
+    /// rather than reaching across modules) to assert: a real city beats a
+    /// wiki-tagged POI, which beats a brand-tagged POI, which beats a
+    /// plain POI; and a wiki-tagged POI still beats a tiny village.
+    #[test]
+    fn poi_score_ordering_matches_production_relationships() {
+        fn place_score_from_pop(pop: u64) -> i64 {
+            if pop == 0 {
+                return 0;
+            }
+            let score = 20.0 * (pop as f64 + 1.0).log10();
+            score.round().min(250.0) as i64
+        }
+
+        let plain = poi_score(&tags(&[("amenity", "cafe")]));
+        let brand = poi_score(&tags(&[("brand", "Starbucks")]));
+        let wiki = poi_score(&tags(&[("wikidata", "Q123")]));
+        let city_800k = place_score_from_pop(800_000);
+        let village_500 = place_score_from_pop(500);
+
+        assert!(city_800k > wiki, "city(800k)={city_800k} must beat wiki-POI={wiki}");
+        assert!(wiki > brand, "wiki-POI={wiki} must beat brand-POI={brand}");
+        assert!(brand > plain, "brand-POI={brand} must beat plain-POI={plain}");
+        assert!(
+            wiki > village_500,
+            "wiki-POI={wiki} must still beat village(500)={village_500}"
+        );
     }
 
     #[test]
@@ -285,14 +390,54 @@ mod tests {
 
     #[test]
     fn carmen_text_builds_name_first_alias_order() {
-        let text = carmen_text("Joe's", "Acme", Some("Monaco"), Some("cafe"));
+        let text = carmen_text("Joe's", "Acme", Some("Monaco"), Some("cafe"), &[]);
         assert_eq!(text, "Joe's,Joe's Monaco,Acme,Acme Monaco,cafe");
     }
 
     #[test]
     fn carmen_text_omits_empty_slots() {
-        let text = carmen_text("Joe's", "", None, Some("cafe"));
+        let text = carmen_text("Joe's", "", None, Some("cafe"), &[]);
         assert_eq!(text, "Joe's,cafe");
+    }
+
+    /// G6: alt_name/short_name/official_name become aliases, ordered after
+    /// name/"name locality" and before brand, empty variants skipped.
+    #[test]
+    fn carmen_text_includes_name_variants_after_name_before_brand() {
+        let text = carmen_text(
+            "Centraal Station",
+            "NS",
+            None,
+            Some("railway_station"),
+            &["Amsterdam Centraal", "", "Amsterdam Centraal Station"],
+        );
+        assert_eq!(
+            text,
+            "Centraal Station,Amsterdam Centraal,Amsterdam Centraal Station,NS,railway_station"
+        );
+    }
+
+    /// G6 acceptance case from the task brief: a POI named "Centraal
+    /// Station" with alt_name "Amsterdam Centraal" must carry BOTH forms in
+    /// carmen:text so the common query "amsterdam centraal" matches it.
+    #[test]
+    fn carmen_text_amsterdam_centraal_alt_name_case() {
+        let text = carmen_text(
+            "Centraal Station",
+            "",
+            None,
+            Some("railway_station"),
+            &["Amsterdam Centraal", "", ""],
+        );
+        assert!(text.contains("Centraal Station"));
+        assert!(text.contains("Amsterdam Centraal"));
+    }
+
+    #[test]
+    fn carmen_text_dedupes_name_variant_equal_to_name() {
+        // alt_name identical to name (case-insensitive) must not duplicate.
+        let text = carmen_text("Joe's", "", None, None, &["joe's", "", ""]);
+        assert_eq!(text, "Joe's");
     }
 
     #[test]
