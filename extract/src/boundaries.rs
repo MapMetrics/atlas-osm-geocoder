@@ -101,10 +101,15 @@ impl AdminSet {
                     return;
                 }
 
-                let admin_level: u8 = tags
-                    .get("admin_level")
-                    .and_then(|s| s.parse::<u8>().ok())
-                    .unwrap_or(0);
+                let admin_level = match admin_relation_gate(&tags) {
+                    Some(level) => level,
+                    None => {
+                        eprintln!(
+                            "warning: admin relation '{name}' has missing or unparseable admin_level, skipping"
+                        );
+                        return;
+                    }
+                };
 
                 let mut outer_way_ids = Vec::new();
                 for member in rel.members() {
@@ -290,15 +295,67 @@ fn place_node_from_tags<'a>(
     })
 }
 
-/// Standard endpoint-matching ring stitcher: given a set of way node-id
-/// lists (each way's endpoints are its first/last node ids), greedily chain
-/// ways whose endpoints match into closed rings.
+/// Gate for whether a relation's tags qualify it as an admin boundary worth
+/// processing, and if so, its parsed `admin_level`.
 ///
-/// Returns `(closed_rings, dropped_count)`. A ring is closed when its final
-/// chained node-id list starts and ends with the same node id and has at
-/// least 4 node ids (3 distinct + closing point). Any way-list segments left
-/// over that can't be chained into a closed ring are dropped (counted, never
-/// panicking).
+/// Returns `None` when `boundary != "administrative"`, or when
+/// `admin_level` is missing or fails to parse as `u8`. OSM admin levels
+/// start at `2` (there is no level `0` or `1` in practice), so a missing/
+/// unparseable `admin_level` has no safe default: synthesizing `0` would
+/// silently outrank every real country in lowest-level-wins logic
+/// downstream. Callers must skip the relation entirely in that case (mirror
+/// the `name.is_empty()` early-return already used for missing names).
+fn admin_relation_gate(tags: &HashMap<&str, &str>) -> Option<u8> {
+    if tags.get("boundary") != Some(&"administrative") {
+        return None;
+    }
+    tags.get("admin_level").and_then(|s| s.parse::<u8>().ok())
+}
+
+/// A candidate way that can extend a chain at one of its ends, found while
+/// scanning `remaining` in [`stitch_rings`].
+struct Candidate {
+    /// Index into `remaining`.
+    index: usize,
+    /// Whether the candidate's node list needs to be reversed before
+    /// splicing (i.e. its matching endpoint was the *other* end of its own
+    /// list).
+    reverse: bool,
+    /// Whether the candidate attaches to the chain's start (prepend) rather
+    /// than the chain's end (append).
+    prepend: bool,
+    /// The candidate's node id at its non-matching (far) end, after
+    /// accounting for `reverse` — i.e. the node id the chain would grow to
+    /// if this candidate is chosen. Used for the "closes immediately" and
+    /// degree tie-break heuristics.
+    far_endpoint: i64,
+}
+
+/// Deterministic adjacency-based ring stitcher: given a set of way node-id
+/// lists (each way's endpoints are its first/last node ids), chain ways
+/// whose endpoints match into closed rings.
+///
+/// At each chain end:
+/// - **Zero** matching unused candidates: the chain can't be extended
+///   further from that end.
+/// - **Exactly one** matching candidate: extend deterministically (handling
+///   reversal/prepend as needed).
+/// - **More than one** (an ambiguous junction, e.g. three-plus boundaries
+///   meeting at a shared node): prefer a candidate that closes the chain
+///   immediately (its far endpoint equals the chain's other end) if one
+///   exists; otherwise prefer the candidate whose far endpoint has the
+///   fewest other remaining candidates touching it (degree heuristic, so we
+///   walk into the least-branchy part of the graph first); ties broken
+///   deterministically by lowest far-endpoint node id — a property of the
+///   graph itself, not of input list order or hash/iteration order — so
+///   results are reproducible across runs regardless of the order ways
+///   happen to appear in the relation's member list.
+///
+/// A chain that cannot be extended from either end and isn't closed is
+/// dropped (counted, `eprintln!` warning) rather than guessed at. Returns
+/// `(closed_rings, dropped_count)`. A ring is closed when its final chained
+/// node-id list starts and ends with the same node id and has at least 4
+/// node ids (3 distinct + closing point).
 fn stitch_rings(way_lists: &[&Vec<i64>]) -> (Vec<Vec<i64>>, u64) {
     // Work on owned copies since we consume ways as we chain them.
     let mut remaining: Vec<Vec<i64>> = way_lists
@@ -322,54 +379,120 @@ fn stitch_rings(way_lists: &[&Vec<i64>]) -> (Vec<Vec<i64>>, u64) {
             let chain_start = *chain.first().unwrap();
             let chain_end = *chain.last().unwrap();
 
-            // Find a remaining way whose endpoint matches either end of the
-            // chain, in any orientation, and splice it in.
-            let mut matched_index = None;
-            let mut reverse_match = false;
-            let mut prepend = false;
-
+            // Collect every remaining way that can attach to either end of
+            // the chain, in any orientation.
+            let mut candidates: Vec<Candidate> = Vec::new();
             for (i, candidate) in remaining.iter().enumerate() {
                 let c_start = *candidate.first().unwrap();
                 let c_end = *candidate.last().unwrap();
 
                 if c_start == chain_end {
-                    matched_index = Some(i);
-                    reverse_match = false;
-                    prepend = false;
-                    break;
-                } else if c_end == chain_end {
-                    matched_index = Some(i);
-                    reverse_match = true;
-                    prepend = false;
-                    break;
-                } else if c_end == chain_start {
-                    matched_index = Some(i);
-                    reverse_match = false;
-                    prepend = true;
-                    break;
-                } else if c_start == chain_start {
-                    matched_index = Some(i);
-                    reverse_match = true;
-                    prepend = true;
-                    break;
+                    candidates.push(Candidate {
+                        index: i,
+                        reverse: false,
+                        prepend: false,
+                        far_endpoint: c_end,
+                    });
+                } else if c_end == chain_end && c_start != c_end {
+                    candidates.push(Candidate {
+                        index: i,
+                        reverse: true,
+                        prepend: false,
+                        far_endpoint: c_start,
+                    });
+                }
+
+                if c_end == chain_start {
+                    candidates.push(Candidate {
+                        index: i,
+                        reverse: false,
+                        prepend: true,
+                        far_endpoint: c_start,
+                    });
+                } else if c_start == chain_start && c_start != c_end {
+                    candidates.push(Candidate {
+                        index: i,
+                        reverse: true,
+                        prepend: true,
+                        far_endpoint: c_end,
+                    });
                 }
             }
 
-            match matched_index {
-                Some(i) => {
-                    let mut candidate = remaining.remove(i);
-                    if reverse_match {
+            let chosen = match candidates.len() {
+                0 => None,
+                1 => Some(candidates.into_iter().next().unwrap()),
+                _ => {
+                    // Ambiguous junction: more than one way could extend
+                    // this chain end. Resolve deterministically.
+
+                    // 1. Prefer a candidate that closes the ring immediately.
+                    if let Some(pos) = candidates
+                        .iter()
+                        .position(|c| c.far_endpoint == chain_start || c.far_endpoint == chain_end)
+                    {
+                        Some(candidates.swap_remove(pos))
+                    } else {
+                        // 2. Degree heuristic: prefer the candidate whose far
+                        // endpoint has the fewest OTHER remaining candidates
+                        // touching it (excluding this candidate itself).
+                        let degree_of = |far: i64, skip_index: usize| -> usize {
+                            remaining
+                                .iter()
+                                .enumerate()
+                                .filter(|&(i, w)| {
+                                    i != skip_index
+                                        && (*w.first().unwrap() == far || *w.last().unwrap() == far)
+                                })
+                                .count()
+                        };
+
+                        let mut best_pos = 0usize;
+                        let mut best_degree = usize::MAX;
+                        let mut tie = false;
+                        for (pos, c) in candidates.iter().enumerate() {
+                            let d = degree_of(c.far_endpoint, c.index);
+                            if d < best_degree {
+                                best_degree = d;
+                                best_pos = pos;
+                                tie = false;
+                            } else if d == best_degree {
+                                tie = true;
+                            }
+                        }
+
+                        if tie {
+                            // Still tied on degree: break deterministically
+                            // by lowest far-endpoint node id. This is a
+                            // property of the graph itself (not of input
+                            // list order or hash/iteration order), so the
+                            // result is reproducible regardless of the
+                            // order ways happen to appear in the relation's
+                            // member list.
+                            candidates.sort_by_key(|c| (c.far_endpoint, c.index));
+                            Some(candidates.into_iter().next().unwrap())
+                        } else {
+                            Some(candidates.swap_remove(best_pos))
+                        }
+                    }
+                }
+            };
+
+            match chosen {
+                Some(c) => {
+                    let mut candidate = remaining.remove(c.index);
+                    if c.reverse {
                         candidate.reverse();
                     }
-                    if prepend {
-                        // candidate's last node == chain's first node;
-                        // drop the duplicate join point.
+                    if c.prepend {
+                        // candidate's matching endpoint == chain's first
+                        // node; drop the duplicate join point.
                         candidate.pop();
                         candidate.extend(chain);
                         chain = candidate;
                     } else {
-                        // candidate's first node == chain's last node;
-                        // drop the duplicate join point.
+                        // candidate's matching endpoint == chain's last
+                        // node; drop the duplicate join point.
                         let mut candidate = candidate;
                         candidate.remove(0);
                         chain.extend(candidate);
@@ -475,6 +598,94 @@ mod tests {
         assert_eq!(rings.len(), 2);
     }
 
+    #[test]
+    fn stitch_rings_does_not_mis_weld_at_shared_junction_node() {
+        // A=[1,2], B=[2,3], C=[3,1], D=[2,4], E=[4,1].
+        //
+        // A, B, C form a genuine closed ring: 1->2->3->1.
+        // D, E form an unclosed chain: 2->4->1 (needs 1->2 to close, but way A
+        // is already consumed by the first ring and each way may only be used
+        // once).
+        //
+        // Node 2 is a shared junction: both B and D start there, and A ends
+        // there. A naive greedy stitcher can weld A to D (or B) by iteration
+        // order alone, producing a spurious ring and leaving a genuine ring's
+        // ways stranded/dropped. The correct decomposition is exactly ONE
+        // closed ring (a rotation of 1-2-3-1) plus one dropped unclosed chain.
+        let way_a = vec![1, 2];
+        let way_b = vec![2, 3];
+        let way_c = vec![3, 1];
+        let way_d = vec![2, 4];
+        let way_e = vec![4, 1];
+        let ways: Vec<&Vec<i64>> = vec![&way_a, &way_b, &way_c, &way_d, &way_e];
+
+        let (rings, dropped) = stitch_rings(&ways);
+
+        assert_eq!(dropped, 1, "expected exactly one dropped unclosed chain");
+        assert_eq!(rings.len(), 1, "expected exactly one closed ring");
+
+        let ring = &rings[0];
+        assert_eq!(ring.first(), ring.last(), "ring must be closed");
+
+        // The closed ring's node sequence must be a rotation of 1-2-3-1, in
+        // either winding direction. Normalize by rotating to start at node 1
+        // (dropping the duplicate closing point first).
+        let mut interior: Vec<i64> = ring[..ring.len() - 1].to_vec();
+        let start = interior
+            .iter()
+            .position(|&n| n == 1)
+            .expect("ring must contain node 1");
+        interior.rotate_left(start);
+
+        let forward = vec![1, 2, 3];
+        let mut reversed = forward.clone();
+        reversed.reverse();
+        assert!(
+            interior == forward || interior == reversed,
+            "expected ring interior to be a rotation of 1-2-3 (either direction), got {interior:?}"
+        );
+    }
+
+    #[test]
+    fn stitch_rings_junction_disambiguation_is_order_independent() {
+        // Same topology as `stitch_rings_does_not_mis_weld_at_shared_junction_node`
+        // (A=[1,2], B=[2,3], C=[3,1], D=[2,4], E=[4,1]), but with D listed
+        // immediately after A. A naive greedy scanner (matches whichever
+        // candidate it encounters first in list order) welds A to D here
+        // instead of A to B, producing a spurious ring 1-2-4-1 and dropping
+        // B+C instead of D+E. The result must not depend on input order: it
+        // must still be exactly one closed ring, a rotation of 1-2-3-1.
+        let way_a = vec![1, 2];
+        let way_d = vec![2, 4];
+        let way_b = vec![2, 3];
+        let way_c = vec![3, 1];
+        let way_e = vec![4, 1];
+        let ways: Vec<&Vec<i64>> = vec![&way_a, &way_d, &way_b, &way_c, &way_e];
+
+        let (rings, dropped) = stitch_rings(&ways);
+
+        assert_eq!(dropped, 1, "expected exactly one dropped unclosed chain");
+        assert_eq!(rings.len(), 1, "expected exactly one closed ring");
+
+        let ring = &rings[0];
+        assert_eq!(ring.first(), ring.last(), "ring must be closed");
+
+        let mut interior: Vec<i64> = ring[..ring.len() - 1].to_vec();
+        let start = interior
+            .iter()
+            .position(|&n| n == 1)
+            .expect("ring must contain node 1");
+        interior.rotate_left(start);
+
+        let forward = vec![1, 2, 3];
+        let mut reversed = forward.clone();
+        reversed.reverse();
+        assert!(
+            interior == forward || interior == reversed,
+            "expected ring interior to be a rotation of 1-2-3 (either direction) regardless of input order, got {interior:?}"
+        );
+    }
+
     fn tags<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Iterator<Item = (&'a str, &'a str)> {
         pairs.iter().copied()
     }
@@ -546,6 +757,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pn.population, 1_234_567);
+    }
+
+    #[test]
+    fn admin_relation_gate_skips_when_admin_level_missing() {
+        // boundary=administrative + name present, but no admin_level tag at
+        // all: OSM admin levels start at 2, so there is no safe default.
+        // Synthesizing 0 would outrank every real country in
+        // lowest-level-wins logic downstream. The relation must be skipped,
+        // not defaulted.
+        let tags: HashMap<&str, &str> =
+            HashMap::from([("boundary", "administrative"), ("name", "Testland")]);
+        assert_eq!(admin_relation_gate(&tags), None);
+    }
+
+    #[test]
+    fn admin_relation_gate_skips_when_admin_level_unparseable() {
+        let tags: HashMap<&str, &str> = HashMap::from([
+            ("boundary", "administrative"),
+            ("name", "Testland"),
+            ("admin_level", "not-a-number"),
+        ]);
+        assert_eq!(admin_relation_gate(&tags), None);
+    }
+
+    #[test]
+    fn admin_relation_gate_accepts_valid_admin_level() {
+        let tags: HashMap<&str, &str> = HashMap::from([
+            ("boundary", "administrative"),
+            ("name", "Testland"),
+            ("admin_level", "2"),
+        ]);
+        assert_eq!(admin_relation_gate(&tags), Some(2));
     }
 
     #[test]
