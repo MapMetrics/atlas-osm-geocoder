@@ -32,7 +32,7 @@ use crate::taxonomy::{categorize, is_poi, TagMap};
 
 /// carmen:score / popularity v1 scoring — a deterministic, open-data
 /// stand-in for the enriched popularity score `poi_score()` computes in
-/// `extract_country_v3.py` (which draws on Google-Places-derived
+/// `extract_country_v3.py` (which draws on external enrichment
 /// `popularity`/`review_count` columns that have no OSM-tag equivalent
 /// here). Base 100; +400 if either `wikidata` or `wikipedia` is present
 /// (a reasonable notability signal — POIs get external encyclopedic
