@@ -161,3 +161,17 @@ consistent with baseline's ~140-266 ms class).
   - G2/G3/G4 remain exactly as filed — untouched, still the likely next-highest-value fixes
     (worker-side manifest/spatial-shard/reverse-path investigations), still out of scope for
     extract-only work.
+
+## Final round (2026-07-15): PARITY REACHED — 35/45, equal to production
+
+World build: 181/181 countries, 0 failures (Azure L48s_v3, ~9h, 3 lanes, auto-deallocated).
+Worker wave (limit floors e62103e + reverse stride/embedded gate/gen override b14ae77 +
+spatial sibling f4597c3) + brand-count scoring (a45e729) + tokenizer v2 bundles landed
+the dev worker at 35/45 — identical to production's contemporaneous 35/45, with a
+BETTER golden set (18/23 vs 16/23) and fuzzy (5/5 vs 4/5). World spot checks green
+(de/us/gb/nl incl. typos and postcodes).
+
+Remaining known gap: reverse 0/3 — converter emits fat-spatial for fewer layers than
+production bundles; needs converter-stage spatial emission parity (filed, final G-item).
+Also discovered en route: production's own NL golden-set regressions (Delfft, Amsterdam
+@limit=1) pre-date this work — traced to the v7 world flip, filed separately in atlas-edge.
