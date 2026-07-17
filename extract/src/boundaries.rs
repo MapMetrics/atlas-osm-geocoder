@@ -58,6 +58,13 @@ pub struct PlaceNode {
     pub lon: f64,
     pub lat: f64,
     pub id: i64,
+    /// G8 (cross-language search): every `name:<lang>` tag value plus
+    /// `int_name` from this node, sorted by tag key for determinism and
+    /// capped at 16 entries (place nodes rarely carry more than a handful
+    /// of language variants, unlike POIs — see `layers::poi`'s 24-cap for
+    /// the higher-cardinality case). See
+    /// `layers::common::is_intl_name_key` for the exact key filter.
+    pub intl_names: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -248,9 +255,16 @@ impl AdminSet {
     }
 }
 
+/// Cap on `PlaceNode::intl_names` (G8: cross-language search) — see the
+/// field's doc comment.
+const PLACE_MAX_INTL_NAMES: usize = 16;
+
 /// Build a `PlaceNode` from a node's id/lon/lat/tags iterator if it carries
 /// `place=*` and a non-empty `name`. Population is parsed leniently: strip
-/// spaces/commas/dots, then `parse().unwrap_or(0)`.
+/// spaces/commas/dots, then `parse().unwrap_or(0)`. Also collects G8
+/// international-name aliases (`name:<lang>` tags + `int_name`, see
+/// [`crate::layers::common::is_intl_name_key`]) into `intl_names`, sorted
+/// by tag key and capped at [`PLACE_MAX_INTL_NAMES`].
 fn place_node_from_tags<'a>(
     id: i64,
     lon: f64,
@@ -260,12 +274,17 @@ fn place_node_from_tags<'a>(
     let mut place: Option<&str> = None;
     let mut name: Option<&str> = None;
     let mut population_raw: Option<&str> = None;
+    let mut intl_pairs: Vec<(&str, &str)> = Vec::new();
 
     for (k, v) in tags {
         match k {
             "place" => place = Some(v),
             "name" => name = Some(v),
             "population" => population_raw = Some(v),
+            "int_name" if !v.is_empty() => intl_pairs.push((k, v)),
+            _ if !v.is_empty() && crate::layers::common::is_intl_name_key(k) => {
+                intl_pairs.push((k, v))
+            }
             _ => {}
         }
     }
@@ -285,6 +304,13 @@ fn place_node_from_tags<'a>(
         .and_then(|cleaned| cleaned.parse::<u64>().ok())
         .unwrap_or(0);
 
+    intl_pairs.sort_by_key(|(k, _)| *k);
+    let intl_names: Vec<String> = intl_pairs
+        .into_iter()
+        .take(PLACE_MAX_INTL_NAMES)
+        .map(|(_, v)| v.to_string())
+        .collect();
+
     Some(PlaceNode {
         name: name.to_string(),
         place: place.to_string(),
@@ -292,6 +318,7 @@ fn place_node_from_tags<'a>(
         lon,
         lat,
         id,
+        intl_names,
     })
 }
 
@@ -759,6 +786,92 @@ mod tests {
         assert_eq!(pn.population, 1_234_567);
     }
 
+    // --- G8: PlaceNode.intl_names ---
+
+    /// G8 acceptance case from the task brief: "Den Haag" gains "The Hague"
+    /// via `name:en`, sorted by tag key alongside `int_name`.
+    #[test]
+    fn place_node_collects_intl_names_sorted_by_key() {
+        let pn = place_node_from_tags(
+            1,
+            4.3007,
+            52.0705,
+            tags(&[
+                ("place", "city"),
+                ("name", "Den Haag"),
+                ("name:en", "The Hague"),
+                ("name:de", "Den Haag"),
+                ("int_name", "The Hague"),
+            ]),
+        )
+        .unwrap();
+        // Sorted by tag key: "int_name" < "name:de" < "name:en".
+        assert_eq!(pn.intl_names, vec!["The Hague", "Den Haag", "The Hague"]);
+    }
+
+    #[test]
+    fn place_node_intl_names_excludes_etymology_pronunciation_and_sides() {
+        let pn = place_node_from_tags(
+            1,
+            0.0,
+            0.0,
+            tags(&[
+                ("place", "city"),
+                ("name", "Testburg"),
+                ("name:etymology", "excluded"),
+                ("name:pronunciation", "excluded"),
+                ("name:left", "excluded"),
+                ("name:right", "excluded"),
+                ("name:en", "Testburg EN"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(pn.intl_names, vec!["Testburg EN"]);
+    }
+
+    #[test]
+    fn place_node_intl_names_empty_when_no_matching_tags() {
+        let pn = place_node_from_tags(1, 0.0, 0.0, tags(&[("place", "city"), ("name", "Plain")]))
+            .unwrap();
+        assert!(pn.intl_names.is_empty());
+    }
+
+    #[test]
+    fn place_node_intl_names_skips_empty_values() {
+        let pn = place_node_from_tags(
+            1,
+            0.0,
+            0.0,
+            tags(&[("place", "city"), ("name", "X"), ("name:en", ""), ("name:fr", "Y-fr")]),
+        )
+        .unwrap();
+        assert_eq!(pn.intl_names, vec!["Y-fr"]);
+    }
+
+    #[test]
+    fn place_node_intl_names_capped_at_sixteen_keeping_sorted_head() {
+        // 20 distinct 2-letter lang codes, deliberately more than the
+        // 16-entry cap.
+        let langs = [
+            "aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj", "kk", "ll", "mm", "nn",
+            "oo", "pp", "qq", "rr", "ss", "tt",
+        ];
+        let pairs: Vec<(String, String)> =
+            langs.iter().map(|l| (format!("name:{l}"), format!("Val-{l}"))).collect();
+
+        let mut tag_pairs: Vec<(&str, &str)> = vec![("place", "city"), ("name", "Capped")];
+        for (k, v) in &pairs {
+            tag_pairs.push((k.as_str(), v.as_str()));
+        }
+
+        let pn = place_node_from_tags(1, 0.0, 0.0, tags(&tag_pairs)).unwrap();
+        assert_eq!(pn.intl_names.len(), 16, "expected the 16-entry cap to apply");
+        // Sorted-key order: "aa".."pp" are the first 16 of 20 sorted keys.
+        assert_eq!(pn.intl_names[0], "Val-aa");
+        assert_eq!(pn.intl_names[15], "Val-pp");
+        assert!(!pn.intl_names.contains(&"Val-qq".to_string()), "tail beyond the cap must be dropped");
+    }
+
     #[test]
     fn admin_relation_gate_skips_when_admin_level_missing() {
         // boundary=administrative + name present, but no admin_level tag at
@@ -805,6 +918,7 @@ mod tests {
             lon: 1.0,
             lat: 2.0,
             id: 99,
+            intl_names: vec![],
         };
         let set = AdminSet::for_test(vec![area], vec![place]);
         assert_eq!(set.areas().len(), 1);

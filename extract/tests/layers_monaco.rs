@@ -135,6 +135,41 @@ fn monaco_place_extraction_contains_monte_carlo() {
     assert!(found_monte_carlo, "expected to find Monte-Carlo among the extracted places");
 }
 
+/// G8 (cross-language search) pin: the Monaco fixture's "Monaco-Ville"
+/// suburb node carries `name:en=Monaco City` — a genuinely different
+/// English name from the primary French `name` tag (distinct from
+/// "Monte-Carlo", which the fixture only tags with da/et/mk/ru/tr variants,
+/// none of them English) — so it's the clearer pin for "place feature
+/// gains a name:<lang> alias" (e.g. "Den Haag" gains "The Hague").
+#[test]
+fn monaco_place_extraction_monaco_ville_gains_name_en_alias() {
+    let out_dir = std::env::temp_dir().join("ae_place_monaco_intl_names_test");
+    fs::create_dir_all(&out_dir).unwrap();
+
+    let nodes = NodeTable::load(MONACO.as_ref(), 10_000_000).unwrap();
+    let admin = AdminSet::load(MONACO.as_ref(), &nodes).unwrap();
+
+    place::extract_places(&admin, &out_dir).unwrap();
+
+    let path = out_dir.join("place.geojsonl");
+    let lines = read_lines(&path);
+
+    let mut found_monaco_ville = false;
+    for line in &lines {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let text = v["properties"]["carmen:text"].as_str().unwrap();
+        if text.split(',').next() == Some("Monaco-Ville") {
+            found_monaco_ville = true;
+            assert!(
+                text.contains("Monaco City"),
+                "Monaco-Ville's carmen:text must include its name:en alias \"Monaco City\", got: {text}"
+            );
+        }
+    }
+
+    assert!(found_monaco_ville, "expected to find Monaco-Ville among the extracted places");
+}
+
 #[test]
 fn monaco_country_extraction_contains_exactly_monaco() {
     let out_dir = std::env::temp_dir().join("ae_country_monaco_test");

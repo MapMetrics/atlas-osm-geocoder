@@ -399,6 +399,7 @@ mod tests {
                 lon: 0.9,
                 lat: 0.9,
                 id: 1,
+                intl_names: vec![],
             }],
         );
         let idx = HierarchyIndex::build(&admin);
@@ -475,6 +476,7 @@ mod tests {
                 lon: 0.5,
                 lat: 0.5,
                 id: 1,
+                intl_names: vec![],
             }],
         );
         let idx = HierarchyIndex::build(&admin);
@@ -494,6 +496,7 @@ mod tests {
                 lon: 10.0,
                 lat: 10.0,
                 id: 1,
+                intl_names: vec![],
             }],
         );
         let idx = HierarchyIndex::build(&admin);
@@ -513,6 +516,7 @@ mod tests {
                     lon: 0.01,
                     lat: 0.01,
                     id: 1,
+                    intl_names: vec![],
                 },
                 PlaceNode {
                     name: "Farther".into(),
@@ -521,6 +525,7 @@ mod tests {
                     lon: 0.05,
                     lat: 0.05,
                     id: 2,
+                    intl_names: vec![],
                 },
             ],
         );

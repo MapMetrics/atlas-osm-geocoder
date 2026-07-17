@@ -57,6 +57,19 @@ fn monaco_poi_extraction_meets_contract() {
                 v["properties"]["locality"].is_string(),
                 "Casino de Monte Carlo must have a resolved locality"
             );
+
+            // G8 (cross-language search) pin: the Monaco fixture's Casino
+            // de Monte Carlo carries `name:en=Monte-Carlo Casino and Opera
+            // House` — a genuinely different English name, not just a
+            // transliteration of the French `name` tag — plus several other
+            // `name:<lang>` tags (cs/de/es/it/ko/pt/zh). carmen:text must
+            // surface at least the English alias so a "Monte Carlo Casino"
+            // search finds this POI even though its primary OSM `name` is
+            // French.
+            assert!(
+                text.contains("Monte-Carlo Casino and Opera House"),
+                "Casino de Monte Carlo's carmen:text must include its name:en alias, got: {text}"
+            );
         }
     }
 

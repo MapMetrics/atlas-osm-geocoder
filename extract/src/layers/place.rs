@@ -16,7 +16,23 @@
 //!   feature codes like `ppl`/`pplc`/`adm1` have no OSM-tag source here).
 //!   Geometry: `Point` at the node's own `(lon, lat)` (python ~line 498).
 //!   `carmen:score` via [`place_score_from_pop`] (verbatim port of the
-//!   python's `_place_score_from_pop`, ~lines 450-454).
+//!   python's `_place_score_from_pop`, ~lines 450-454). `carmen:text` (G8:
+//!   cross-language search) is `[name, intl_names...]` dedup-joined via
+//!   [`dedup_join`] — `PlaceNode::intl_names` (every `name:<lang>` tag value
+//!   plus `int_name` on the place node itself, sorted by tag key, capped at
+//!   16 — see `boundaries::place_node_from_tags`) gives e.g. "Den Haag" the
+//!   alias "The Hague" (`name:en`). This is this crate's direct equivalent
+//!   of production's `names_intl` external-enrichment alias slot for
+//!   places. **Follow-up**: `extract_regions`'s `AdminArea`-sourced rows
+//!   (admin_level==4 boundary relations) and [`extract_countries`] do NOT
+//!   get this treatment — `AdminArea` carries no tags at all (only
+//!   `name`/`admin_level`/`rings`, collected from `boundary=administrative`
+//!   *relations*, a different OSM object type than the `place=*` *nodes*
+//!   `PlaceNode` sources from), so there is no `name:<lang>` source to read
+//!   for regions/countries in this v1. `extract_regions`'s OTHER source
+//!   (`PlaceNode`s with `place` in `{state, region}`) does carry
+//!   `intl_names` but is left unchanged here too, out of this task's
+//!   explicit scope ("place feature's aliases") — a natural next step.
 //! - [`extract_regions`]: `region.geojsonl` combines TWO sources per the
 //!   task brief (the python's `extract_region` only has one — a
 //!   `places_v3` GeoNames-feature-code query with no OSM admin-boundary
@@ -98,15 +114,37 @@ fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
 
-/// Mirrors `extract_country_v3.py`'s `clean_alias`/`dedup_join`, specialized
-/// to this module's single-alias callers (place/region/country `carmen:text`
-/// is always just the bare name — see module doc — so the general
-/// multi-alias `Vec` form `layers::poi`/`layers::street` use would be dead
-/// generality here): strip commas (carmen:text is comma-split downstream)
-/// and collapse whitespace. Returns `""` for a name that is empty/all
-/// whitespace/all-commas, so callers can gate on emptiness uniformly.
+/// Mirrors `extract_country_v3.py`'s `clean_alias`: strip commas
+/// (carmen:text is comma-split downstream) and collapse whitespace. Returns
+/// `""` for a name that is empty/all whitespace/all-commas, so callers can
+/// gate on emptiness uniformly. Used directly by `extract_regions`/
+/// `extract_countries` (whose `carmen:text` is always just the bare name —
+/// see module doc) and as the per-alias cleaner inside [`dedup_join`] below
+/// (G8: `extract_places`'s multi-alias `carmen:text`).
 fn clean_text(name: &str) -> String {
     name.replace(',', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// G8 (cross-language search): name-first, case-insensitive deduped,
+/// comma-joined alias list — mirrors `layers::poi`'s `dedup_join`. Only
+/// [`extract_places`] needs this multi-alias form (`[name, intl_names...]`);
+/// `extract_regions`/`extract_countries` stay on the single-name
+/// [`clean_text`] (see module doc's "Follow-up" note on why regions/
+/// countries don't get `intl_names` in this v1).
+fn dedup_join(parts: &[String]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for p in parts {
+        let cleaned = clean_text(p);
+        if cleaned.is_empty() {
+            continue;
+        }
+        let key = cleaned.to_lowercase();
+        if seen.insert(key) {
+            out.push(cleaned);
+        }
+    }
+    out.join(",")
 }
 
 /// Ring centroid: arithmetic mean of the polygon's first ring's exterior
@@ -132,9 +170,10 @@ fn ring_centroid(area: &crate::boundaries::AdminArea) -> Option<(f64, f64)> {
 }
 
 /// `place.geojsonl`: one `Feature` per qualifying `PlaceNode` (see
-/// [`PLACE_TYPES`]). `carmen:text` = the node's own `name` (this crate has
-/// no `name_en`/`names_intl` equivalent — see module doc). Geometry: `Point`
-/// at the node's own coordinates. Returns the number of features written.
+/// [`PLACE_TYPES`]). `carmen:text` = `[name, intl_names...]` dedup-joined
+/// (G8: cross-language search — see module doc and [`dedup_join`]).
+/// Geometry: `Point` at the node's own coordinates. Returns the number of
+/// features written.
 pub fn extract_places(
     admin: &AdminSet,
     out_dir: &Path,
@@ -149,7 +188,11 @@ pub fn extract_places(
         if p.name.is_empty() {
             continue;
         }
-        let text = clean_text(&p.name);
+
+        let mut aliases: Vec<String> = Vec::with_capacity(1 + p.intl_names.len());
+        aliases.push(p.name.clone());
+        aliases.extend(p.intl_names.iter().cloned());
+        let text = dedup_join(&aliases);
         if text.is_empty() {
             continue;
         }
@@ -320,6 +363,75 @@ mod tests {
         assert!(ring_centroid(&area).is_none());
     }
 
+    // --- G8: dedup_join (place multi-alias carmen:text) ---
+
+    #[test]
+    fn dedup_join_places_name_first_then_intl_names() {
+        let parts = vec!["Den Haag".to_string(), "The Hague".to_string()];
+        assert_eq!(dedup_join(&parts), "Den Haag,The Hague");
+    }
+
+    #[test]
+    fn dedup_join_places_dedupes_case_insensitively() {
+        let parts = vec!["Monaco".to_string(), "monaco".to_string(), "Monaco City".to_string()];
+        assert_eq!(dedup_join(&parts), "Monaco,Monaco City");
+    }
+
+    #[test]
+    fn dedup_join_places_skips_empty_entries() {
+        let parts = vec!["Name".to_string(), "".to_string(), "Alias".to_string()];
+        assert_eq!(dedup_join(&parts), "Name,Alias");
+    }
+
+    /// G8 acceptance case from the task brief: "Den Haag" gains "The Hague"
+    /// via `intl_names` (`name:en` on the place node).
+    #[test]
+    fn extract_places_appends_intl_names_to_carmen_text() {
+        let dir = std::env::temp_dir().join("ae_place_intl_names_unit_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let admin = AdminSet::for_test(
+            vec![],
+            vec![PlaceNode {
+                name: "Den Haag".into(),
+                place: "city".into(),
+                population: 545_838,
+                lon: 4.3007,
+                lat: 52.0705,
+                id: 1,
+                intl_names: vec!["The Hague".into()],
+            }],
+        );
+        let count = extract_places(&admin, &dir).unwrap();
+        assert_eq!(count, 1);
+
+        let contents = std::fs::read_to_string(dir.join("place.geojsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(v["properties"]["carmen:text"], "Den Haag,The Hague");
+    }
+
+    #[test]
+    fn extract_places_carmen_text_is_just_name_when_no_intl_names() {
+        let dir = std::env::temp_dir().join("ae_place_no_intl_names_unit_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let admin = AdminSet::for_test(
+            vec![],
+            vec![PlaceNode {
+                name: "Plainville".into(),
+                place: "village".into(),
+                population: 0,
+                lon: 0.0,
+                lat: 0.0,
+                id: 1,
+                intl_names: vec![],
+            }],
+        );
+        extract_places(&admin, &dir).unwrap();
+
+        let contents = std::fs::read_to_string(dir.join("place.geojsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(v["properties"]["carmen:text"], "Plainville");
+    }
+
     #[test]
     fn extract_places_filters_by_place_type() {
         let dir = std::env::temp_dir().join("ae_place_unit_test");
@@ -334,6 +446,7 @@ mod tests {
                     lon: 1.0,
                     lat: 2.0,
                     id: 1,
+                    intl_names: vec![],
                 },
                 PlaceNode {
                     name: "NotAPlaceType".into(),
@@ -342,6 +455,7 @@ mod tests {
                     lon: 3.0,
                     lat: 4.0,
                     id: 2,
+                    intl_names: vec![],
                 },
             ],
         );
@@ -363,6 +477,7 @@ mod tests {
                     lon: 5.0,
                     lat: 5.0,
                     id: 1,
+                    intl_names: vec![],
                 },
                 PlaceNode {
                     name: "NotRegionPlace".into(),
@@ -371,6 +486,7 @@ mod tests {
                     lon: 6.0,
                     lat: 6.0,
                     id: 2,
+                    intl_names: vec![],
                 },
             ],
         );

@@ -8,12 +8,16 @@
 //! row inputs to raw OSM tag inputs:
 //!
 //! - `carmen:text`: dedup-joined aliases, name-first: `[name, "name locality",
-//!   alt_name, short_name, official_name, brand, "brand locality", category]`
-//!   (G6: `alt_name`/`short_name`/`official_name` tag values inserted after
-//!   name/"name locality" and before brand — see [`carmen_text`] doc). The
-//!   python's `ext_name`/`names_intl` alias slots have no OSM-tag equivalent
-//!   in this v1 (no external-source merge at this stage) and are simply
-//!   absent from the list, not emitted as empty entries.
+//!   alt_name, short_name, official_name, name:<lang>..., int_name, brand,
+//!   "brand locality", category]` (G6: `alt_name`/`short_name`/
+//!   `official_name` tag values inserted after name/"name locality" and
+//!   before brand; G8: every `name:<lang>` tag value plus `int_name`,
+//!   sorted by tag key, inserted after the G6 name variants and before
+//!   brand, capped at [`MAX_ALIASES`] total aliases — see [`carmen_text`]
+//!   doc). This directly sources what production's `names_intl`
+//!   external-enrichment alias slot covers (the python's `ext_name` slot
+//!   still has no OSM-tag equivalent in this v1 and is simply absent from
+//!   the list, not emitted as an empty entry).
 //! - `carmen:center`: raw `[lon, lat]`, unrounded (the python does not round
 //!   `extract_poi`'s center either — only `extract_country`'s country
 //!   centroid rounds to 4dp).
@@ -29,9 +33,20 @@ use crate::emit::LayerWriter;
 use crate::error::ExtractError;
 use crate::hierarchy::HierarchyIndex;
 use crate::ids::{hid, osm_sid};
-use crate::layers::common::{tags_to_map, way_centroid};
+use crate::layers::common::{is_intl_name_key, tags_to_map, way_centroid};
 use crate::nodes::NodeTable;
 use crate::taxonomy::{categorize, is_poi, TagMap};
+
+/// Total alias cap per POI (G8: cross-language search) — some POIs in dense
+/// multilingual areas carry 40+ `name:<lang>` tags, and an unbounded alias
+/// list bloats `carmen:text` and the downstream search index for marginal
+/// benefit. The cap trims ONLY the tail of the `name:<lang>` segment (see
+/// [`carmen_text`] doc): `name`, `name` + locality, `alt_name`/`short_name`/
+/// `official_name`, and `brand`/`brand` + locality/`category` are never
+/// trimmed — only the lowest-priority, highest-cardinality segment
+/// (international names, sorted by tag key for determinism) is cut short
+/// when the total would otherwise exceed this cap.
+const MAX_ALIASES: usize = 24;
 
 /// carmen:score / popularity v1 scoring — a deterministic, open-data
 /// stand-in for the enriched popularity score `poi_score()` computes in
@@ -188,18 +203,30 @@ fn dedup_join(parts: &[String]) -> String {
 /// `extract_poi`: name, "name locality", brand, "brand locality", category —
 /// with `name_variants` (G6: `alt_name`/`short_name`/`official_name` tag
 /// values, in that order) inserted after name/"name locality" and before
-/// brand. These OSM tags carry common alternate query forms the primary
-/// `name` tag misses (e.g. a station tagged `name=Centraal Station` but
-/// commonly searched as `alt_name=Amsterdam Centraal`); production's
-/// equivalent is external-source alias enrichment this OSM-tag-only v1 has
-/// no other route to. Empty variants are skipped; `dedup_join` below
-/// case-insensitively dedupes against `name` and each other.
+/// brand, and `intl_names` (G8: cross-language search — every `name:<lang>`
+/// tag value, plus `int_name`, already sorted by tag key by the caller —
+/// see [`crate::layers::common::is_intl_name_key`] for the exact filter)
+/// inserted after `name_variants` and before brand. These OSM tags carry
+/// common alternate query forms the primary `name` tag misses (e.g. a
+/// station tagged `name=Centraal Station` but commonly searched as
+/// `alt_name=Amsterdam Centraal`; or a POI whose `name` is in the local
+/// language but commonly searched in English via `name:en`); production's
+/// equivalent is external-source alias enrichment (`names_intl`) this
+/// OSM-tag-only v1 sources directly from `name:<lang>` tags instead. Empty
+/// variants/intl values are skipped; `dedup_join` below case-insensitively
+/// dedupes against `name` and each other.
+///
+/// [`MAX_ALIASES`] caps the total alias count per POI. The cap trims ONLY
+/// the tail of `intl_names` (dropping the lowest-priority, sorted-last
+/// language codes first) — `name`, "name locality", `name_variants`, brand,
+/// "brand locality", and `category` are always kept in full.
 fn carmen_text(
     name: &str,
     brand: &str,
     locality: Option<&str>,
     category: Option<&str>,
     name_variants: &[&str],
+    intl_names: &[&str],
 ) -> String {
     let mut aliases: Vec<String> = Vec::new();
     if !name.is_empty() {
@@ -217,6 +244,19 @@ fn carmen_text(
             aliases.push(variant.to_string());
         }
     }
+
+    // G8: room left for the fixed (never-trimmed) head + tail segments
+    // (name_variants already pushed above; brand/brand-locality/category
+    // pushed below take at most 3 more slots) determines how many
+    // intl_names entries the cap allows before we start dropping the tail.
+    const TRAILING_SLOTS: usize = 3; // brand, brand+locality, category
+    let budget = MAX_ALIASES.saturating_sub(aliases.len() + TRAILING_SLOTS);
+    for variant in intl_names.iter().take(budget) {
+        if !variant.is_empty() {
+            aliases.push(variant.to_string());
+        }
+    }
+
     if !brand.is_empty() {
         aliases.push(brand.to_string());
         if let Some(loc) = locality {
@@ -229,6 +269,25 @@ fn carmen_text(
         aliases.push(cat.to_string());
     }
     dedup_join(&aliases)
+}
+
+/// Collect this POI's international-name aliases (G8): every `name:<lang>`
+/// tag value (see [`is_intl_name_key`] for the exact key filter) plus
+/// `int_name`, in sorted-tag-key order for determinism (so re-running the
+/// extractor on unchanged input always produces byte-identical output).
+/// `int_name` sorts alongside the `name:<lang>` keys purely by its own
+/// string value: `"int_name"` starts with `'i'`, which is lexicographically
+/// before `"name:"`'s `'n'`, so `int_name` always sorts first, ahead of
+/// every `name:<lang>` entry regardless of language code. Empty tag values
+/// are skipped.
+fn collect_intl_names(tags: &TagMap) -> Vec<String> {
+    let mut pairs: Vec<(&str, &str)> = tags
+        .iter()
+        .filter(|(k, v)| (is_intl_name_key(k) || k.as_str() == "int_name") && !v.is_empty())
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    pairs.sort_by_key(|(k, _)| *k);
+    pairs.into_iter().map(|(_, v)| v.to_string()).collect()
 }
 
 /// One resolved POI candidate, gathered during the streaming pass, before
@@ -332,7 +391,10 @@ pub fn extract(
         let official_name = c.tags.get("official_name").map(String::as_str).unwrap_or("");
         let name_variants = [alt_name, short_name, official_name];
 
-        let text = carmen_text(name, brand, locality, category, &name_variants);
+        let intl_names_owned = collect_intl_names(&c.tags);
+        let intl_names: Vec<&str> = intl_names_owned.iter().map(String::as_str).collect();
+
+        let text = carmen_text(name, brand, locality, category, &name_variants, &intl_names);
         if text.is_empty() {
             // is_poi already guarantees name-or-brand present, so this
             // should not happen, but never emit an empty carmen:text.
@@ -570,13 +632,13 @@ mod tests {
 
     #[test]
     fn carmen_text_builds_name_first_alias_order() {
-        let text = carmen_text("Joe's", "Acme", Some("Monaco"), Some("cafe"), &[]);
+        let text = carmen_text("Joe's", "Acme", Some("Monaco"), Some("cafe"), &[], &[]);
         assert_eq!(text, "Joe's,Joe's Monaco,Acme,Acme Monaco,cafe");
     }
 
     #[test]
     fn carmen_text_omits_empty_slots() {
-        let text = carmen_text("Joe's", "", None, Some("cafe"), &[]);
+        let text = carmen_text("Joe's", "", None, Some("cafe"), &[], &[]);
         assert_eq!(text, "Joe's,cafe");
     }
 
@@ -590,6 +652,7 @@ mod tests {
             None,
             Some("railway_station"),
             &["Amsterdam Centraal", "", "Amsterdam Centraal Station"],
+            &[],
         );
         assert_eq!(
             text,
@@ -608,6 +671,7 @@ mod tests {
             None,
             Some("railway_station"),
             &["Amsterdam Centraal", "", ""],
+            &[],
         );
         assert!(text.contains("Centraal Station"));
         assert!(text.contains("Amsterdam Centraal"));
@@ -616,8 +680,125 @@ mod tests {
     #[test]
     fn carmen_text_dedupes_name_variant_equal_to_name() {
         // alt_name identical to name (case-insensitive) must not duplicate.
-        let text = carmen_text("Joe's", "", None, None, &["joe's", "", ""]);
+        let text = carmen_text("Joe's", "", None, None, &["joe's", "", ""], &[]);
         assert_eq!(text, "Joe's");
+    }
+
+    // --- G8: name:<lang> / int_name cross-language aliases ---
+
+    /// G8: intl_names are inserted after name_variants and before brand.
+    #[test]
+    fn carmen_text_includes_intl_names_after_variants_before_brand() {
+        let text = carmen_text(
+            "Casino de Monte Carlo",
+            "",
+            None,
+            Some("casino"),
+            &[],
+            &["Monte-Carlo Casino and Opera House", "Kasino Monte Carlo"],
+        );
+        assert_eq!(
+            text,
+            "Casino de Monte Carlo,Monte-Carlo Casino and Opera House,Kasino Monte Carlo,casino"
+        );
+    }
+
+    /// G8 + G6 combined: name_variants come first, then intl_names, then
+    /// brand — the full documented order.
+    #[test]
+    fn carmen_text_orders_variants_then_intl_names_then_brand() {
+        let text = carmen_text(
+            "Name",
+            "Brand",
+            None,
+            None,
+            &["AltName"],
+            &["IntlA", "IntlB"],
+        );
+        assert_eq!(text, "Name,AltName,IntlA,IntlB,Brand");
+    }
+
+    #[test]
+    fn carmen_text_dedupes_intl_name_equal_to_name() {
+        let text = carmen_text("Monaco", "", None, None, &[], &["monaco", "Monaco City"]);
+        assert_eq!(text, "Monaco,Monaco City");
+    }
+
+    #[test]
+    fn carmen_text_skips_empty_intl_name_entries() {
+        let text = carmen_text("Joe's", "", None, None, &[], &["", "English Name", ""]);
+        assert_eq!(text, "Joe's,English Name");
+    }
+
+    /// G8 cap: total aliases per POI never exceed MAX_ALIASES (24), and the
+    /// cap trims ONLY the tail of the intl_names segment — name, variants,
+    /// brand/brand-locality, and category are always kept.
+    #[test]
+    fn carmen_text_caps_total_aliases_by_trimming_intl_names_tail() {
+        // 20 distinct intl names, sorted-key order already guaranteed by the
+        // caller (collect_intl_names) — here we just verify carmen_text's
+        // trimming math directly with a pre-sorted slice.
+        let intl_names: Vec<String> = (0..20).map(|i| format!("Intl{i:02}")).collect();
+        let intl_refs: Vec<&str> = intl_names.iter().map(String::as_str).collect();
+
+        let text = carmen_text(
+            "Name",
+            "Brand",
+            Some("Locality"),
+            Some("category"),
+            &["Alt"],
+            &intl_refs,
+        );
+        let aliases: Vec<&str> = text.split(',').collect();
+        assert!(aliases.len() <= MAX_ALIASES, "expected <= {MAX_ALIASES} aliases, got {}", aliases.len());
+
+        // Fixed head/tail segments must all survive: name, name+locality,
+        // alt, brand, brand+locality, category = 6 fixed slots, leaving
+        // 24 - 6 = 18 slots for intl_names (all trimmed from the tail, i.e.
+        // Intl18/Intl19 dropped, Intl00..Intl17 kept).
+        assert_eq!(aliases[0], "Name");
+        assert_eq!(aliases[1], "Name Locality");
+        assert_eq!(aliases[2], "Alt");
+        assert!(aliases.contains(&"Brand"), "brand must survive the cap");
+        assert!(aliases.contains(&"Brand Locality"), "brand+locality must survive the cap");
+        assert!(aliases.contains(&"category"), "category must survive the cap");
+        assert!(!text.contains("Intl19"), "lowest-priority (last-sorted) intl name must be trimmed first");
+        assert!(text.contains("Intl00"), "highest-priority (first-sorted) intl name must survive");
+    }
+
+    // --- G8: collect_intl_names key filter + sort order ---
+
+    #[test]
+    fn collect_intl_names_filters_and_sorts_by_key() {
+        let t = tags(&[
+            ("name", "Casino de Monte Carlo"),
+            ("name:en", "Monte-Carlo Casino and Opera House"),
+            ("name:cs", "Kasino Monte Carlo"),
+            ("name:de", "Kasino Monte Carlo"),
+            ("name:etymology", "should be excluded"),
+            ("name:pronunciation", "should be excluded"),
+            ("name:left", "should be excluded"),
+            ("int_name", "Monte Carlo Casino"),
+            ("brand", "should be excluded"),
+        ]);
+        let got = collect_intl_names(&t);
+        // Sorted by tag key: "int_name" < "name:cs" < "name:de" < "name:en".
+        assert_eq!(
+            got,
+            vec!["Monte Carlo Casino", "Kasino Monte Carlo", "Kasino Monte Carlo", "Monte-Carlo Casino and Opera House"]
+        );
+    }
+
+    #[test]
+    fn collect_intl_names_skips_empty_values() {
+        let t = tags(&[("name:en", ""), ("name:fr", "Nom Français")]);
+        assert_eq!(collect_intl_names(&t), vec!["Nom Français"]);
+    }
+
+    #[test]
+    fn collect_intl_names_empty_when_no_matching_tags() {
+        let t = tags(&[("name", "Foo"), ("amenity", "cafe")]);
+        assert!(collect_intl_names(&t).is_empty());
     }
 
     #[test]
