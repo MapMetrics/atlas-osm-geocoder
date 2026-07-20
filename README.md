@@ -43,6 +43,108 @@ https://portal.mapmetrics.org, use the `geocode` scope, and call
 `https://gateway.mapmetrics-atlas.net/v2/forward-geocode/?token=YOUR_KEY&q=...`
 (add `&format=v1` for a Pelias-compatible response shape).
 
+## API
+
+Your deployed worker exposes these endpoints at its own origin. All responses are
+GeoJSON-style `FeatureCollection`s. On the hosted free tier, `search` and `reverse`
+are wrapped behind the gateway as `/osm-geocode/` and `/osm-reverse/` (add
+`?token=YOUR_KEY`).
+
+### `GET /search` — full-text geocoding
+
+Place, address, POI, or postcode search.
+
+| param | required | description |
+|-------|:--------:|-------------|
+| `q` | ✓ | query text — `Elfhuizen 9`, `Rijksmuseum Amsterdam`, `3011 Rotterdam` |
+| `limit` | | max results (default 10) |
+| `proximity` | | `lon,lat` — bias ranking toward a point |
+| `types` | | comma-separated layer filter: `poi,place,address,postcode,region,country` |
+
+```bash
+# self-hosted:
+curl "https://YOUR-WORKER/search?q=Elfhuizen%209&proximity=4.66,51.81"
+# hosted free tier:
+curl "https://gateway.mapmetrics-atlas.net/osm-geocode/?token=YOUR_KEY&q=Elfhuizen%209"
+```
+
+```json
+{
+  "type": "FeatureCollection",
+  "query": ["elfhuizen", "117"],
+  "features": [
+    {
+      "id": "address.43025135157773171",
+      "place_type": ["address"],
+      "relevance": 1.0,
+      "text": "Elfhuizen 9",
+      "place_name": "Elfhuizen 9, Dordrecht",
+      "center": [4.664717, 51.812515],
+      "geometry": { "type": "Point", "coordinates": [4.664717, 51.812515] },
+      "context": [
+        { "id": "place.5416240181831543792", "text": "Dordrecht" },
+        { "id": "country.nl", "text": "Netherlands", "short_code": "nl" }
+      ],
+      "properties": { "housenumber": "117", "layer": "address" }
+    }
+  ]
+}
+```
+
+### `GET /autocomplete` — typeahead
+
+Low-latency prefix search for as-you-type UIs. Same params as `/search`. Returns
+`results` (not `features`); each result adds a `matching_text` field.
+
+```json
+{
+  "type": "FeatureCollection",
+  "query": "rijksm",
+  "results": [
+    {
+      "id": "poi.37355879192731132",
+      "place_type": ["poi"],
+      "text": "Rijksmuseum",
+      "place_name": "Rijksmuseum, Amsterdam",
+      "center": [4.8853736, 52.360065],
+      "properties": { "category": "museum", "layer": "poi" },
+      "matching_text": "Rijksm"
+    }
+  ]
+}
+```
+
+### `GET /reverse` — coordinates → nearest place
+
+| param | required | description |
+|-------|:--------:|-------------|
+| `lon` | ✓ | longitude |
+| `lat` | ✓ | latitude |
+| `limit` | | max results |
+
+```bash
+curl "https://YOUR-WORKER/reverse?lon=4.66&lat=51.81"
+# hosted: https://gateway.mapmetrics-atlas.net/osm-reverse/?token=YOUR_KEY&lon=4.66&lat=51.81
+```
+
+Returns a `FeatureCollection` of the nearest features (same shape as `/search`).
+
+### Response fields
+
+| field | meaning |
+|-------|---------|
+| `text` | short name |
+| `place_name` | full display name (`name, locality`) |
+| `center` | `[lon, lat]` |
+| `place_type` / `properties.layer` | `poi` \| `place` \| `address` \| `postcode` \| `region` \| `country` |
+| `relevance` | 0–1 match score |
+| `context[]` | parent hierarchy (locality, country) |
+| `properties.housenumber` | present on address results |
+| `properties.category` | POI category (e.g. `museum`, `restaurant`) |
+| `id` | stable feature id — `<layer>.<id>` |
+
+---
+
 ## Run your own — download the prebuilt world (no build required)
 
 Skip the PBF crunching: download the ready-made planet bundle, upload it to your
