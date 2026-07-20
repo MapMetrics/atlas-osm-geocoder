@@ -10,6 +10,12 @@ osm.pbf ──► atlas-extract ──► layer files ──► convert ──�
 
 Status: early development.
 
+## Documentation
+
+- **[Getting started](docs/getting-started.md)** — use the hosted API in 3 steps (curl / JS / Python)
+- **[API reference](docs/api.md)** — every endpoint, parameter, and response field
+- **[Self-hosting guide](docs/self-hosting.md)** — run your own, step by step (prerequisites → data → deploy → verify)
+
 ## Hosted free tier
 
 **▶ Try it live:** https://osm-geo-demo.mapmetrics-atlas.net — an interactive
@@ -45,7 +51,8 @@ https://portal.mapmetrics.org, use the `geocode` scope, and call
 
 ## API
 
-Your deployed worker exposes these endpoints at its own origin. All responses are
+Quick reference below — full details, error codes, and code samples in
+**[docs/api.md](docs/api.md)**. Your deployed worker exposes these endpoints at its own origin. All responses are
 GeoJSON-style `FeatureCollection`s. On the hosted free tier, `search` and `reverse`
 are wrapped behind the gateway as `/osm-geocode/` and `/osm-reverse/` (add
 `?token=YOUR_KEY`).
@@ -146,6 +153,9 @@ Returns a `FeatureCollection` of the nearest features (same shape as `/search`).
 ---
 
 ## Run your own — download the prebuilt world (no build required)
+
+> Full step-by-step (prerequisites, R2 setup, deploy, verify):
+> **[docs/self-hosting.md](docs/self-hosting.md)**.
 
 Skip the PBF crunching: download the ready-made planet bundle, upload it to your
 own Cloudflare R2, and deploy the worker. One file — **~6.4 GB** compressed
