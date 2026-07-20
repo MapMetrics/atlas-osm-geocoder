@@ -4,7 +4,7 @@
 //! filter, resolves its centroid via `way_centroid`, and writes
 //! `street.geojsonl` via `emit::LayerWriter`. Property/geometry contract
 //! mirrors `extract_country_v3.py`'s `extract_street` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! `extract_street` ~lines 394-447) exactly, adapted from ClickHouse
 //! `streets_v3` row inputs (one pre-aggregated row per named way) to raw OSM
 //! way inputs:
@@ -14,7 +14,7 @@
 //!   per `streets_v3` row — and `streets_v3` is *already* one row per named
 //!   way (populated upstream by `streets.lua`'s `process_way`, which fires
 //!   once per way carrying both `highway` and `name`; see
-//!   `/Volumes/T7/osm.pbfconverter/streets.lua`). There is no `GROUP BY` in
+//!   `streets.lua`). There is no `GROUP BY` in
 //!   `extract_street`'s SQL and no client-side aggregation step, unlike
 //!   `extract_address`'s explicit `GROUP BY addr_street, parent_locality`.
 //!   This module therefore emits one `Feature` per qualifying OSM way, not
@@ -29,7 +29,7 @@
 //!   emits `{"type": "Point", "coordinates": center}`, python ~line 444).
 //! - **Named-highway filter**: ANY way with non-empty `highway` tag AND
 //!   non-empty `name` tag qualifies, mirroring `streets.lua`'s upstream gate
-//!   (see `/Volumes/T7/osm.pbfconverter/streets.lua`,
+//!   (see `streets.lua`,
 //!   `object.tags.highway and object.tags.name`). No allowlist of highway
 //!   classes; all classes from `highway=*` are accepted, achieving
 //!   production parity with `build_streets_v3.sql` (`p.highway != '' AND

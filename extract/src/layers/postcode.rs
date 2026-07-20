@@ -6,7 +6,7 @@
 //! `postcode.geojsonl` via `emit::LayerWriter` — one `Feature` per distinct
 //! code at the MEAN coordinate of all its members. Property contract
 //! mirrors `extract_country_v3.py`'s `extract_postcode` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! `extract_postcode` ~lines 590-617), adapted from ClickHouse
 //! `postcodes_v3` inputs to raw OSM `addr:postcode` tag inputs.
 //!

@@ -2,7 +2,7 @@
 //! Monaco fixture. Pins the geometry/property conventions of
 //! `extract_country_v3.py`'s `extract_street`/`extract_place`/
 //! `extract_region`/`extract_country` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 316-587), adapted from ClickHouse `*_v3` row inputs to raw OSM
 //! tag inputs. See `layers::street`/`layers::place` module doc comments for
 //! the full per-convention pin references.

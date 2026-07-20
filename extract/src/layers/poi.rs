@@ -3,7 +3,7 @@
 //! Streams nodes and ways out of the `.osm.pbf`, gates each through
 //! `taxonomy::is_poi`, and writes `poi.geojsonl` via `emit::LayerWriter`.
 //! Property contract mirrors `extract_country_v3.py`'s `extract_poi`
-//! (see `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! (see `scripts/extract_country_v3.py`,
 //! `extract_poi` ~lines 171-246) exactly, adapted from ClickHouse `pois_v3`
 //! row inputs to raw OSM tag inputs:
 //!
@@ -51,7 +51,7 @@ const MAX_ALIASES: usize = 24;
 /// carmen:score / popularity v1 scoring — a deterministic, open-data
 /// stand-in for the enriched popularity score `poi_score()` computes in
 /// `extract_country_v3.py` (~lines 148-159:
-/// `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`),
+/// `scripts/extract_country_v3.py`),
 /// which draws on external enrichment `popularity`/`review_count` columns
 /// that have no OSM-tag equivalent here.
 ///
@@ -68,7 +68,7 @@ const MAX_ALIASES: usize = 24;
 ///    verified to mirror NL: **~53% zero**, mass in 100-999, rare 8000+
 ///    landmarks." An unenriched POI (no `popularity`/`review_count`) scores
 ///    **0**, not a positive base.
-/// 2. The serving worker (`atlas-edge/worker/src/lib.rs`, `text_bonus_impl`)
+/// 2. The serving worker (`worker/src/lib.rs`, `text_bonus_impl`)
 ///    hardcodes a landmark threshold at `carmen:score >= 8000`
 ///    (+200 alias-boost) and `layer_bonus` gives poi/place comparable flat
 ///    weight (poi 1.5 vs place 2.0) — popularity is a fine-grained

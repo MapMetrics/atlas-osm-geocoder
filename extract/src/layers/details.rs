@@ -6,9 +6,9 @@
 //! `poi_details.jsonl` — one bare JSON object per line (NOT a GeoJSON
 //! Feature) — via a plain `serde_json` writer. Field contract mirrors
 //! `extract_country_v3.py`'s `extract_poi_details` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 249-324) and the sidecar design doc
-//! (`/Volumes/T7/osm.pbfconverter/atlas-edge/docs/superpowers/specs/2026-07-14-details-sidecar-design.md`),
+//! (`2026-07-14-details-sidecar-design.md`),
 //! adapted from ClickHouse `pois_v3` enrichment columns (which have no
 //! OSM-tag equivalent — `rating`/`review_count`/`price_range` are Google
 //! Places enrichment outputs this crate never produces) to raw OSM tags:
@@ -43,7 +43,7 @@
 //!   `addr:city` (falling back to the resolved hierarchy locality if the
 //!   raw tag is absent), `addr:postcode`, `addr:country`, in the EXACT
 //!   format the upstream ClickHouse pipeline builds `full_address` in (see
-//!   `/Volumes/T7/osm.pbfconverter/build_pois_v3_osm_only.py` ~lines
+//!   `build_pois_v3_osm_only.py` ~lines
 //!   188-194 and `build_pois_v3_paginated.py` ~lines 267-274):
 //!   `"{hn} {street}, {city} {postcode}, {country}"`, trimmed of
 //!   leading/trailing spaces, then collapsed/stripped of stray `" ,"`

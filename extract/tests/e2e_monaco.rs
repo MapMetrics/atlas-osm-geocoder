@@ -2,7 +2,7 @@
 //! smoke test of the downstream Rust converter over our own output.
 //!
 //! Mirrors `extract_country_v3.py`'s `main()` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 619-649) run end-to-end: pass 1a/1b index builds, then all seven
 //! carmen layer emitters + the `/details` sidecar source, in one call.
 
@@ -118,7 +118,7 @@ fn monaco_e2e_converter_bundle_and_details_smoke() {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         repo_root
-            .join("atlas-edge/converter/target/release/convert")
+            .join("converter/target/release/convert")
             .to_string_lossy()
             .to_string()
     });

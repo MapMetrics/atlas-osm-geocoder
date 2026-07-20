@@ -8,7 +8,7 @@ Workers (free tier viable for small regions).
 osm.pbf ──► atlas-extract ──► layer files ──► convert ──► bundle ──► your worker
 ```
 
-Status: early development. See docs/specs/ and docs/plans/.
+Status: early development.
 
 ## Hosted free tier
 

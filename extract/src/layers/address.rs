@@ -5,7 +5,7 @@
 //! `(addr:street, resolved locality)`, and writes `address.geojsonl` via
 //! `emit::LayerWriter`. Property contract mirrors `extract_country_v3.py`'s
 //! `extract_address` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 327-391) exactly, adapted from ClickHouse `addresses_v3` row
 //! inputs (which are pre-grouped server-side via `GROUP BY addr_street,
 //! parent_locality`) to raw OSM tag inputs (grouped client-side here

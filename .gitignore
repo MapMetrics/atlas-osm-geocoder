@@ -1,3 +1,6 @@
 target/
 *.pbf.tmp
 .superpowers/
+
+# large local test data (never commit)
+/testdata/

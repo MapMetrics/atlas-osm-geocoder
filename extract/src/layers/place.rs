@@ -4,7 +4,7 @@
 //! Three sibling functions, each writing one layer file, mirroring
 //! `extract_country_v3.py`'s `extract_place` / `extract_region` /
 //! `extract_country` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 450-587) exactly, adapted from ClickHouse `places_v3` row inputs
 //! (pre-filtered upstream by `place_type IN (...)`) to raw OSM `PlaceNode`/
 //! `AdminArea` inputs collected by `boundaries::AdminSet::load`:

@@ -1,7 +1,7 @@
 //! End-to-end orchestration: PBF -> layer files.
 //!
 //! Mirrors `extract_country_v3.py`'s `main()` (see
-//! `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! `scripts/extract_country_v3.py`,
 //! ~lines 619-649): pass 1a (`NodeTable::load`) -> pass 1b
 //! (`AdminSet::load`) -> hierarchy index build (`HierarchyIndex::build`) ->
 //! pass 2 emitters, run sequentially in the python's exact layer order

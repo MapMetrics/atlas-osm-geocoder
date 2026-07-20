@@ -2,7 +2,7 @@
 //! the Monaco fixture.
 //!
 //! `postcode::extract` mirrors `extract_country_v3.py`'s `extract_postcode`
-//! (see `/Volumes/T7/osm.pbfconverter/atlas-edge/scripts/extract_country_v3.py`,
+//! (see `scripts/extract_country_v3.py`,
 //! `extract_postcode` ~lines 590-617) exactly, adapted from ClickHouse
 //! `postcodes_v3` row inputs (one row per distinct postcode already grouped
 //! server-side) to raw OSM `addr:postcode` tag inputs (grouped client-side
@@ -10,7 +10,7 @@
 //! members).
 //!
 //! `details::extract` writes `poi_details.jsonl` — the /details sidecar
-//! source (docs/superpowers/specs/2026-07-14-details-sidecar-design.md),
+//! source (2026-07-14-details-sidecar-design.md),
 //! adapted from `extract_poi_details`'s ClickHouse `pois_v3` columns to raw
 //! OSM tags. See `layers::details` module doc for the full per-field pin.
 
@@ -251,7 +251,7 @@ fn monaco_details_have_expected_fields() {
 fn monaco_details_satisfy_converter_emit_details_smoke() {
     let convert_bin = std::env::var("CONVERT_BIN").ok().unwrap_or_else(|| {
         // Fallback: repo-relative path from CARGO_MANIFEST_DIR
-        // (../../atlas-edge/converter/target/release/convert)
+        // (../../converter/target/release/convert)
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
             .unwrap_or_else(|_| ".".to_string());
         let repo_root = std::path::PathBuf::from(manifest_dir)
@@ -260,7 +260,7 @@ fn monaco_details_satisfy_converter_emit_details_smoke() {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         repo_root
-            .join("atlas-edge/converter/target/release/convert")
+            .join("converter/target/release/convert")
             .to_string_lossy()
             .to_string()
     });

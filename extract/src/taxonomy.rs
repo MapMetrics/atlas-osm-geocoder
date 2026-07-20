@@ -1,5 +1,5 @@
 //! Category taxonomy ported from `pois_all.lua` (read-only reference,
-//! `/Volumes/T7/osm.pbfconverter/pois_all.lua`, 180 lines).
+//! `pois_all.lua`, 180 lines).
 //!
 //! IMPORTANT finding (see Task 2 report): `pois_all.lua` itself does NOT
 //! contain a tag -> category resolution table. Its `is_poi()` (lines 55-58)
