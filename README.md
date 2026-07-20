@@ -33,6 +33,16 @@ Get a free key: sign up at https://portal.mapmetrics.org and create an
 API key with the `osm-geocode` scope. Call it at
 `https://gateway.mapmetrics-atlas.net/osm-geocode/?token=YOUR_KEY&q=...`.
 
+### Want more than OSM? Try the enriched V2 geocoder
+
+This toolkit and the free tier serve **pure OpenStreetMap** data. If you need
+broader coverage, the **enriched V2 geocoder** adds **millions of extra POIs** —
+businesses, brands, and places that aren't in OSM — on top of the same fast
+search, autocomplete, and reverse geocoding. It's a paid tier: sign up at
+https://portal.mapmetrics.org, use the `geocode` scope, and call
+`https://gateway.mapmetrics-atlas.net/v2/forward-geocode/?token=YOUR_KEY&q=...`
+(add `&format=v1` for a Pelias-compatible response shape).
+
 ## Run your own — download the prebuilt world (no build required)
 
 Skip the PBF crunching: download the ready-made planet bundle, upload it to your
