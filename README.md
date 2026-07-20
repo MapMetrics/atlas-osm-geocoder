@@ -31,8 +31,8 @@ Get a free key: <sign-up URL TBD>.
 ## Run your own — download the prebuilt world (no build required)
 
 Skip the PBF crunching: download the ready-made planet bundle, upload it to your
-own Cloudflare R2, and deploy the worker. One file — ~14 GB compressed (~21 GB
-extracted, 181 countries, generation `v7b`).
+own Cloudflare R2, and deploy the worker. One file — **~6.4 GB** compressed
+(~22 GB extracted, 181 countries, generation `v7b`).
 
 ```bash
 # 1. Download the whole planet
