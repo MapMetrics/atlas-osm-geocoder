@@ -28,9 +28,34 @@ use.
 
 Get a free key: <sign-up URL TBD>.
 
-## Self-host = unlimited
+## Run your own — download the prebuilt world (no build required)
 
-The whole point: feed `atlas-extract` an `osm.pbf`, run `convert`, deploy the
+Skip the PBF crunching: download the ready-made planet bundle, upload it to your
+own Cloudflare R2, and deploy the worker. One file — ~14 GB compressed (~21 GB
+extracted, 181 countries, generation `v7b`).
+
+```bash
+# 1. Download the whole planet
+curl -O https://pub-76c6897ca8ee46a78ba0827d502d1456.r2.dev/world-v7b.tar.zst
+
+# 2. Extract -> produces {cc}/v7b/... exactly as the worker expects
+tar --zstd -xf world-v7b.tar.zst
+
+# 3. Upload to YOUR R2 bucket (parallel; this is the slow part, ~194k objects)
+rclone copy . r2:your-bucket --transfers 64 --checkers 64
+
+# 4. Deploy the worker pointing at your bucket (BUNDLE = your-bucket, BUNDLE_GEN = v7b)
+wrangler deploy
+```
+
+The archive preserves the `{cc}/v7b/` layout, so step 3 lands the keys exactly
+where the worker reads them — no renaming, no CLI. It's a full planet copy, so
+your geocoder works worldwide out of the box.
+
+## Build your own from a PBF (unlimited, any region)
+
+Prefer to build from scratch — or want just one region instead of the planet?
+Feed `atlas-extract` an `osm.pbf`, run `convert`, deploy the
 worker to your own Cloudflare account. No keys, no caps, no cost to us or you
 beyond your own Cloudflare usage (free tier covers small regions).
 
