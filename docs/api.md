@@ -32,7 +32,7 @@ curl "https://gateway.mapmetrics-atlas.net/osm-geocode/?token=YOUR_KEY&q=Elfhuiz
 ```json
 {
   "type": "FeatureCollection",
-  "query": ["elfhuizen", "117"],
+  "query": ["elfhuizen", "9"],
   "features": [
     {
       "id": "address.43025135157773171",
@@ -46,7 +46,7 @@ curl "https://gateway.mapmetrics-atlas.net/osm-geocode/?token=YOUR_KEY&q=Elfhuiz
         { "id": "place.5416240181831543792", "text": "Dordrecht" },
         { "id": "country.nl", "text": "Netherlands", "short_code": "nl" }
       ],
-      "properties": { "housenumber": "117", "layer": "address" }
+      "properties": { "housenumber": "9", "layer": "address" }
     }
   ]
 }
