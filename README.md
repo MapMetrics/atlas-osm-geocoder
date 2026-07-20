@@ -12,6 +12,9 @@ Status: early development.
 
 ## Hosted free tier
 
+**▶ Try it live:** https://osm-geo-demo.mapmetrics-atlas.net — an interactive
+demo (map, search, autocomplete, reverse) running on the hosted instance.
+
 We run a free, keyed public instance of this geocoder. Limits per API key:
 
 | limit | value | window |
@@ -26,7 +29,9 @@ Cloudflare account; the guide below gets you there in ~5 commands). The hosted
 tier is a convenience and a demo, not the intended path for heavy or commercial
 use.
 
-Get a free key: <sign-up URL TBD>.
+Get a free key: sign up at https://portal.mapmetrics.org and create an
+API key with the `osm-geocode` scope. Call it at
+`https://gateway.mapmetrics-atlas.net/osm-geocode/?token=YOUR_KEY&q=...`.
 
 ## Run your own — download the prebuilt world (no build required)
 
